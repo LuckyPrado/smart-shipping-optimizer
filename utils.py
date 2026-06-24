@@ -2,6 +2,7 @@ from pathlib import Path
 from math import radians, sin, cos, sqrt, atan2
 import pandas as pd
 
+
 brazil_regions = {
     "AC": "North", "AP": "North", "AM": "North", "PA": "North",
     "RO": "North", "RR": "North", "TO": "North",
@@ -33,18 +34,50 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * 2 * atan2(sqrt(a), sqrt(1-a))
 
 def load_data():
-    path = Path(__file__).resolve().parent / "data" 
-    orders = pd.read_csv(path / "olist_orders_dataset.csv")
-    order_items = pd.read_csv(path / "olist_order_items_dataset.csv")
-    order_payments = pd.read_csv(path / "olist_order_payments_dataset.csv")
-    order_reviews = pd.read_csv(path / "olist_order_reviews_dataset.csv")
-    products = pd.read_csv(path / "olist_products_dataset.csv")
-    sellers = pd.read_csv(path / "olist_sellers_dataset.csv")
-    customers = pd.read_csv(path / "olist_customers_dataset.csv")
-    geo = pd.read_csv(path / "olist_geolocation_dataset.csv")
-    geo = geo.groupby("geolocation_zip_code_prefix")[
-        ["geolocation_lat", "geolocation_lng"]
-    ].mean()
+    path = Path(__file__).resolve().parent / "data"
+    cache_file = path / "_cache.parquet"
+
+    # if cache exist, use it
+    if cache_file.exists():
+        print("Using cached files.", flush=True)
+        return pd.read_parquet(cache_file)
+    
+    # else build dataframe from CSVs
+    print("Building DataFrame", flush=True)
+
+    print("Loading orders...", flush=True)
+    orders = pd.read_csv(path / "olist_orders_dataset.csv",engine="pyarrow")
+    print("Done", flush=True)
+
+    print("Loading order_items...", flush=True)
+    order_items = pd.read_csv(path / "olist_order_items_dataset.csv",engine="pyarrow")
+    print("Done", flush=True)
+
+    print("Loading order_payments...", flush=True)
+    order_payments = pd.read_csv(path / "olist_order_payments_dataset.csv",engine="pyarrow")
+    print("Done", flush=True)
+
+    print("Loading order_reviews...", flush=True) 
+    order_reviews = pd.read_csv(path / "olist_order_reviews_dataset.csv",engine="pyarrow")
+    print("Done", flush=True)
+    
+    print("Loading products...", flush=True)
+    products = pd.read_csv(path / "olist_products_dataset.csv",engine="pyarrow")
+    print("Done", flush=True)
+    
+    print("Loading sellers...", flush=True)
+    sellers = pd.read_csv(path / "olist_sellers_dataset.csv",engine="pyarrow")
+    print("Done", flush=True)
+    
+    print("Loading customers...", flush=True)
+    customers = pd.read_csv(path / "olist_customers_dataset.csv",engine="pyarrow")
+    print("Done", flush=True)
+    
+    print("Loading geo...", flush=True)
+    geo = pd.read_csv(path / "olist_geolocation_dataset.csv", engine="pyarrow", usecols=["geolocation_zip_code_prefix", "geolocation_lat", "geolocation_lng"])
+    geo = geo.groupby("geolocation_zip_code_prefix")[["geolocation_lat", "geolocation_lng"]].mean()
+    print("Done", flush=True)
+
     df = orders.merge(order_items, on="order_id")
     df = df.merge(products, on="product_id")
     df = df.merge(sellers, on="seller_id")
@@ -70,5 +103,12 @@ def load_data():
     df["shipping_limit_date"] = pd.to_datetime(df["shipping_limit_date"])
     df["order_estimated_delivery_date"] = pd.to_datetime(df["order_estimated_delivery_date"])
     df["order_delivered_customer_date"] = pd.to_datetime(df["order_delivered_customer_date"])
+
+    # save cache
+    df.to_parquet(cache_file, index=False)
+    
     return df
+
+if __name__ == "__main__":
+    load_data()
 
