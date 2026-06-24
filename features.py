@@ -1,6 +1,3 @@
-from pathlib import Path
-from math import radians, sin, cos, sqrt, atan2
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,46 +6,7 @@ import seaborn as sns
 from statsmodels.nonparametric.smoothers_lowess import lowess
 from scipy import stats
 
-
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = sin(dlat/2)**2 + cos(lat1)*cos(lat2)*sin(dlon/2)**2
-    return R * 2 * atan2(sqrt(a), sqrt(1-a))
-
-
-def load_data():
-    path = Path(__file__).resolve().parent / "data"
-    orders = pd.read_csv(path / "olist_orders_dataset.csv")
-    order_items = pd.read_csv(path / "olist_order_items_dataset.csv")
-    order_payments = pd.read_csv(path / "olist_order_payments_dataset.csv")
-    order_reviews = pd.read_csv(path / "olist_order_reviews_dataset.csv")
-    products = pd.read_csv(path / "olist_products_dataset.csv")
-    sellers = pd.read_csv(path / "olist_sellers_dataset.csv")
-    customers = pd.read_csv(path / "olist_customers_dataset.csv")
-    geo = pd.read_csv(path / "olist_geolocation_dataset.csv")
-    geo = geo.groupby("geolocation_zip_code_prefix")[["geolocation_lat", "geolocation_lng"]].mean()
-    df = orders.merge(order_items, on="order_id")
-    df = df.merge(products, on="product_id")
-    df = df.merge(sellers, on="seller_id")
-    df = df.merge(customers, on="customer_id")
-    df = df.merge(geo, left_on="seller_zip_code_prefix", right_index=True)
-    df = df.rename(columns={"geolocation_lat": "seller_lat", "geolocation_lng": "seller_lng"})
-    df = df.merge(geo, left_on="customer_zip_code_prefix", right_index=True)
-    df = df.rename(columns={"geolocation_lat": "customer_lat", "geolocation_lng": "customer_lng"})
-    payments_agg = order_payments.groupby("order_id").agg(
-        payment_installments=("payment_installments", "max"),
-        payment_type=("payment_type", lambda x: x.mode()[0]),
-        payment_value=("payment_value", "sum")
-    ).reset_index()
-    df = df.merge(payments_agg, on="order_id", how="left")
-    reviews_agg = order_reviews.groupby("order_id").agg(
-        review_score=("review_score", "mean")
-    ).reset_index()
-    df = df.merge(reviews_agg, on="order_id", how="left")
-    return df
+from utils import haversine, load_data, SP_LAT, SP_LNG
 
 logistics = load_data()
 
@@ -101,7 +59,7 @@ logistics["holiday_window"] = pd.cut(
 ).astype(float)
 
 logistics["seller_hub_distance"] = logistics.apply(
-    lambda row: haversine(row["seller_lat"], row["seller_lng"], -23.5505, -46.6333), axis=1
+    lambda row: haversine(row["seller_lat"], row["seller_lng"], SP_LAT, SP_LNG), axis=1
 )
 logistics["seller_customer_state_reach"] = logistics["seller_id"].map(
     logistics.groupby("seller_id")["customer_state"].nunique()

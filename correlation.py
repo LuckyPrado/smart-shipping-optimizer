@@ -1,5 +1,4 @@
-from pathlib import Path
-from math import radians, sin, cos, sqrt, atan2
+from utils import haversine, load_data, brazil_regions
 
 import pandas as pd
 import numpy as np
@@ -14,35 +13,6 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.decomposition import PCA
 from sklearn.cluster import DBSCAN
 from scipy import stats
-
-
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = sin(dlat/2)**2 + cos(lat1)*cos(lat2)*sin(dlon/2)**2
-    return R * 2 * atan2(sqrt(a), sqrt(1-a))
-
-
-def load_data():
-    path = Path(__file__).resolve().parent / "data"
-    orders = pd.read_csv(path / "olist_orders_dataset.csv")
-    order_items = pd.read_csv(path / "olist_order_items_dataset.csv")
-    products = pd.read_csv(path / "olist_products_dataset.csv")
-    sellers = pd.read_csv(path / "olist_sellers_dataset.csv")
-    customers = pd.read_csv(path / "olist_customers_dataset.csv")
-    geo = pd.read_csv(path / "olist_geolocation_dataset.csv")
-    geo = geo.groupby("geolocation_zip_code_prefix")[["geolocation_lat", "geolocation_lng"]].mean()
-    df = orders.merge(order_items, on="order_id")
-    df = df.merge(products, on="product_id")
-    df = df.merge(sellers, on="seller_id")
-    df = df.merge(customers, on="customer_id")
-    df = df.merge(geo, left_on="seller_zip_code_prefix", right_index=True)
-    df = df.rename(columns={"geolocation_lat": "seller_lat", "geolocation_lng": "seller_lng"})
-    df = df.merge(geo, left_on="customer_zip_code_prefix", right_index=True)
-    df = df.rename(columns={"geolocation_lat": "customer_lat", "geolocation_lng": "customer_lng"})
-    return df
 
 
 logistics = load_data()
@@ -242,15 +212,6 @@ plt.show()
 print("\n" + "=" * 60)
 print("8. GEOGRAPHIC TOPOLOGY — NORTH/SOUTH PENALTY")
 print("=" * 60)
-brazil_regions = {
-    "AC": "North", "AP": "North", "AM": "North", "PA": "North",
-    "RO": "North", "RR": "North", "TO": "North",
-    "AL": "Northeast", "BA": "Northeast", "CE": "Northeast", "MA": "Northeast",
-    "PB": "Northeast", "PE": "Northeast", "PI": "Northeast", "RN": "Northeast", "SE": "Northeast",
-    "DF": "Central-West", "GO": "Central-West", "MT": "Central-West", "MS": "Central-West",
-    "ES": "Southeast", "MG": "Southeast", "RJ": "Southeast", "SP": "Southeast",
-    "PR": "South", "RS": "South", "SC": "South"
-}
 logistics["customer_region"] = logistics["customer_state"].map(brazil_regions)
 logistics["seller_region"] = logistics["seller_state"].map(brazil_regions)
 region_stats = logistics.groupby("customer_region")["estimated_delivery_days"].agg(["mean", "std", "count"])
