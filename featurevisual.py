@@ -14,7 +14,7 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 def load_data():
-    path = Path("C:/Users/Grace/mlprojects/data")
+    path = Path(__file__).resolve().parent / "data"
     orders = pd.read_csv(path / "olist_orders_dataset.csv")
     order_items = pd.read_csv(path / "olist_order_items_dataset.csv")
     order_payments = pd.read_csv(path / "olist_order_payments_dataset.csv")

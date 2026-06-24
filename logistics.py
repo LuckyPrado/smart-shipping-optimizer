@@ -354,7 +354,7 @@ def engineer_features(df, seller_volume_map, route_freq_map,
 
 
 def load_data():
-    path = Path("/home/wugong/smart-shipping-optimizer/data/")
+    path = Path(__file__).resolve().parent / "data" 
     orders = pd.read_csv(path / "olist_orders_dataset.csv")
     order_items = pd.read_csv(path / "olist_order_items_dataset.csv")
     order_payments = pd.read_csv(path / "olist_order_payments_dataset.csv")
@@ -593,7 +593,7 @@ print(f"Overfitting gap:    {xgb_scores.mean() - test_rmse:.4f} days")
 #model persistence
 model_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 model_filename = f"xgb_delivery_model_{model_timestamp}_rmse{test_rmse:.4f}.pkl"
-model_path = Path("/home/wugong/smart-shipping-optimizer/models") / model_filename
+model_path = Path(__file__).resolve().parent / "models" / model_filename
 
 model_path.parent.mkdir(parents=True, exist_ok=True)
 
