@@ -1,5 +1,5 @@
 from pathlib import Path
-from math import radians, sin, cos, sqrt, atan2
+import numpy as np
 import pandas as pd
 
 
@@ -26,12 +26,14 @@ category_complexity_map = {
 SP_LAT, SP_LNG = -23.5505, -46.6333
 
 def haversine(lat1, lon1, lat2, lon2):
-    R = 6371
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    """ Calculate distance between two point on earth"""
+    R = 6378.137 # Earth radius in Km
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
     dlat = lat2 - lat1
     dlon = lon2 - lon1
-    a = sin(dlat/2)**2 + cos(lat1)*cos(lat2)*sin(dlon/2)**2
-    return R * 2 * atan2(sqrt(a), sqrt(1-a))
+    a = np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
+    distance = R * 2 * np.arcsin(np.sqrt(a))
+    return distance 
 
 def load_data():
     path = Path(__file__).resolve().parent / "data"

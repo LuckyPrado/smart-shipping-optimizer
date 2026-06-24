@@ -31,10 +31,9 @@ def engineer_features(df, seller_volume_map, route_freq_map,
                       is_train=True):
     df = df.copy()
 
-    df["real_distance_km"] = df.apply(
-        lambda row: haversine(row["seller_lat"], row["seller_lng"],
-                              row["customer_lat"], row["customer_lng"]), axis=1
-    )
+    df["real_distance_km"] = haversine(df["seller_lat"].to_numpy(), df["seller_lng"].to_numpy(),
+                              df["customer_lat"].to_numpy(), df["customer_lng"].to_numpy())
+    
     df["seller_customer_lat_diff"] = abs(df["customer_lat"] - df["seller_lat"])
     df["seller_customer_lng_diff"] = abs(df["customer_lng"] - df["seller_lng"])
     df["zip_distance"] = abs(df["customer_zip_code_prefix"] - df["seller_zip_code_prefix"])
@@ -260,10 +259,8 @@ def engineer_features(df, seller_volume_map, route_freq_map,
         df["log_city_density"] * df["operational_stress"]
     )
 
-    df["seller_hub_distance"] = df.apply(
-        lambda row: haversine(row["seller_lat"], row["seller_lng"], SP_LAT, SP_LNG),
-        axis=1
-    )
+    df["seller_hub_distance"] = haversine(df["seller_lat"].to_numpy(), df["seller_lng"].to_numpy(), SP_LAT, SP_LNG)
+        
     df["seller_customer_state_reach"] = df["seller_id"].map(
         df.groupby("seller_id")["customer_state"].nunique()
     )

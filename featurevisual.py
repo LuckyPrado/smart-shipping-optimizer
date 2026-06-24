@@ -39,13 +39,10 @@ logistics["seller_processing_window"] = (
 
 logistics["category_complexity"] = logistics["product_category_name"].map(category_complexity_map).fillna(2)
 
-logistics["real_distance_km"] = logistics.apply(
-    lambda row: haversine(row["seller_lat"], row["seller_lng"],
-                          row["customer_lat"], row["customer_lng"]), axis=1
-)
-logistics["seller_hub_distance"] = logistics.apply(
-    lambda row: haversine(row["seller_lat"], row["seller_lng"], SP_LAT, SP_LNG), axis=1
-)
+logistics["real_distance_km"] = haversine(logistics["seller_lat"].to_numpy(), logistics["seller_lng"].to_numpy(),
+                          logistics["customer_lat"].to_numpy(), logistics["customer_lng"].to_numpy())
+
+logistics["seller_hub_distance"] = haversine(logistics["seller_lat"].to_numpy(), logistics["seller_lng"].to_numpy(), SP_LAT, SP_LNG)
 
 seller_avg_review = logistics.groupby("seller_id")["review_score"].mean()
 logistics["seller_avg_review"] = logistics["seller_id"].map(seller_avg_review).fillna(3.0)
