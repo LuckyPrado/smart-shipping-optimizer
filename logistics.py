@@ -181,7 +181,7 @@ def engineer_features(df, seller_volume_map, route_freq_map,
     df["product_catalog_age_days"] = (
         df["order_purchase_timestamp"] - df["product_first_sale"]
     ).dt.days
-    df["log_catalog_age"] = np.log1p(df["product_catalog_age_days"].fillna(0))
+    df["log_catalog_age"] = np.log1p(df["product_catalog_age_days"].fillna(0).clip(lower=0))
     df["log_review_comment"] = np.log1p(df["review_comment_length"].fillna(0))
     df["log_order_value_ratio"] = np.log1p(
         df["price"] / df["seller_avg_order_value"].replace(0, np.nan)
