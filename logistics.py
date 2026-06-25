@@ -6,9 +6,9 @@ assert version.parse(sklearn.__version__) >= version.parse("1.0.1")
 from pathlib import Path
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, TimeSeriesSplit
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder, StandardScaler, TargetEncoder
 from sklearn.pipeline import make_pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import root_mean_squared_error
@@ -20,8 +20,6 @@ from utils import haversine, load_data, brazil_regions, category_complexity_map,
 
 
 def engineer_features(df, seller_volume_map, route_freq_map,
-                      state_pair_avg_map, customer_state_avg_map,
-                      seller_state_avg_map, route_variability_map,
                       seller_avg_review_map, seller_review_volatility_map,
                       seller_high_installment_rate_map, seller_avg_order_value_map,
                       seller_age_map, city_density_map, daily_order_map,
@@ -102,18 +100,6 @@ def engineer_features(df, seller_volume_map, route_freq_map,
     df["rare_route_flag"] = (
         df["route_frequency"] < df["route_frequency"].quantile(0.25)
     ).astype(int)
-    df["route_variability"] = df["state_pair"].map(route_variability_map).fillna(
-        route_variability_map.mean()
-    )
-    df["state_pair_avg_days"] = df["state_pair"].map(state_pair_avg_map).fillna(
-        state_pair_avg_map.mean()
-    )
-    df["customer_state_avg_days"] = df["customer_state"].map(customer_state_avg_map).fillna(
-        customer_state_avg_map.mean()
-    )
-    df["seller_state_avg_days"] = df["seller_state"].map(seller_state_avg_map).fillna(
-        seller_state_avg_map.mean()
-    )
 
     df["payment_approval_delay"] = (
         df["order_approved_at"] - df["order_purchase_timestamp"]
@@ -262,7 +248,11 @@ logistics["actual_delivery_days"] = (logistics["order_delivered_customer_date"] 
 
 logistics = logistics.dropna(subset=["actual_delivery_days", "order_delivered_customer_date"])
 
-train_set, test_set = train_test_split(logistics, test_size=0.2, random_state=42)
+# time-based split: earliest 80% = train, latest 20% = test (no future leaking into the past)
+logistics = logistics.sort_values("order_purchase_timestamp")
+split_idx = int(len(logistics) * 0.8)
+train_set = logistics.iloc[:split_idx]
+test_set = logistics.iloc[split_idx:]
 print(f"Train: {len(train_set)} | Test: {len(test_set)}")
 
 train_set = train_set.dropna(subset=["product_weight_g", "freight_value", "price"])
@@ -273,10 +263,6 @@ train_set["purchase_date"] = train_set["order_purchase_timestamp"].dt.date
 #training maps
 seller_volume_map = train_set.groupby("seller_id")["order_id"].count()
 route_freq_map = train_set.groupby("state_pair")["order_id"].count()
-state_pair_avg_map = train_set.groupby("state_pair")["actual_delivery_days"].mean()
-customer_state_avg_map = train_set.groupby("customer_state")["actual_delivery_days"].mean()
-seller_state_avg_map = train_set.groupby("seller_state")["actual_delivery_days"].mean()
-route_variability_map = train_set.groupby("state_pair")["actual_delivery_days"].std()
 seller_avg_review_map = train_set.groupby("seller_id")["review_score"].mean()
 seller_review_volatility_map = train_set.groupby("seller_id")["review_score"].std().fillna(0)
 seller_high_installment_map = train_set.groupby("seller_id")["payment_installments"].apply(
@@ -306,8 +292,7 @@ logistics_labels = train_set["actual_delivery_days"].copy()
 
 logistics_train = engineer_features(
     logistics_train, seller_volume_map, route_freq_map,
-    state_pair_avg_map, customer_state_avg_map, seller_state_avg_map,
-    route_variability_map, seller_avg_review_map, seller_review_volatility_map,
+    seller_avg_review_map, seller_review_volatility_map,
     seller_high_installment_map, seller_avg_order_value_map, seller_age_map,
     city_density_map, daily_order_map, rolling_7d_map, product_first_sale_map,
     seller_state_reach_map, seller_price_range_map,
@@ -330,9 +315,7 @@ num_attribs = [
     "purchase_month", "purchase_dayofweek", "quarter",
     "holiday_pressure", "fast_season",
     "daily_order_count", "rolling_7d_orders", "log_rolling_7d",
-    "route_frequency", "rare_route_flag", "route_variability",
-    "state_pair_avg_days",
-    "customer_state_avg_days", "seller_state_avg_days", 
+    "route_frequency", "rare_route_flag",
     "payment_approval_delay", "log_approval_delay",
     "category_complexity", "log_catalog_age",
     "items_per_order", "unique_sellers_per_order",
@@ -368,9 +351,12 @@ def make_preprocessing():
         SimpleImputer(strategy="most_frequent"),
         OneHotEncoder(handle_unknown="ignore")
     )
+    # target encoding refit per CV fold (no leakage) — replaces the precomputed *_avg_days maps
+    target_attribs = ["state_pair", "customer_state", "seller_state"]
     return ColumnTransformer([
         ("num", num_pipeline, num_attribs),
-        ("cat", cat_pipeline, cat_attribs)
+        ("cat", cat_pipeline, cat_attribs),
+        ("target", TargetEncoder(), target_attribs)
     ])
 
 
@@ -394,12 +380,13 @@ xgb_reg = make_pipeline(make_preprocessing(), XGBRegressor(
 
 xgb_reg.fit(logistics_train, logistics_labels)
 
-#cross validation
-print("Running 10-fold cross validation...")
+#cross validation (time-aware: always train on the past, validate on the future)
+print("Running TimeSeriesSplit cross validation...")
+tscv = TimeSeriesSplit(n_splits=10)
 xgb_scores = -cross_val_score(
     xgb_reg, logistics_train, logistics_labels,
     scoring="neg_root_mean_squared_error",
-    cv=10,
+    cv=tscv,
     n_jobs=-1,
     verbose=2
 )
@@ -419,8 +406,7 @@ test_labels = test_set_clean["actual_delivery_days"].copy()
 test_engineered = engineer_features(
     test_set_clean.drop("actual_delivery_days", axis=1),
     seller_volume_map, route_freq_map,
-    state_pair_avg_map, customer_state_avg_map, seller_state_avg_map,
-    route_variability_map, seller_avg_review_map, seller_review_volatility_map,
+    seller_avg_review_map, seller_review_volatility_map,
     seller_high_installment_map, seller_avg_order_value_map, seller_age_map,
     city_density_map, daily_order_map, rolling_7d_map, product_first_sale_map,
     seller_state_reach_map, seller_price_range_map,
@@ -453,10 +439,6 @@ model_artifact = {
     "maps": {
         "seller_volume_map": seller_volume_map,
         "route_freq_map": route_freq_map,
-        "state_pair_avg_map": state_pair_avg_map,
-        "customer_state_avg_map": customer_state_avg_map,
-        "seller_state_avg_map": seller_state_avg_map,
-        "route_variability_map": route_variability_map,
         "seller_avg_review_map": seller_avg_review_map,
         "seller_review_volatility_map": seller_review_volatility_map,
         "seller_high_installment_map": seller_high_installment_map,
