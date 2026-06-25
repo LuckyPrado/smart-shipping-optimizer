@@ -40,11 +40,8 @@ def engineer_features(df, seller_volume_map, route_freq_map,
     df["customer_zip_prefix_bin"] = df["customer_zip_code_prefix"] // 10000
     df["same_state"] = (df["seller_state"] == df["customer_state"]).astype(int)
     df["state_pair"] = df["seller_state"] + "_" + df["customer_state"]
-    df["state_pair_cat"] = df["state_pair"].astype("category").cat.codes
     df["seller_region"] = df["seller_state"].map(brazil_regions)
     df["customer_region"] = df["customer_state"].map(brazil_regions)
-    df["seller_state_cat"] = df["seller_state"].astype("category").cat.codes
-    df["customer_state_cat"] = df["customer_state"].astype("category").cat.codes
     df["north_involved"] = (
         (df["seller_region"] == "North") | (df["customer_region"] == "North")
     ).astype(int)
@@ -73,7 +70,6 @@ def engineer_features(df, seller_volume_map, route_freq_map,
     df["log_freight"] = np.log1p(df["freight_value"])
     df["log_weight"] = np.log1p(df["product_weight_g"])
     df["log_volume"] = np.log1p(df["product_volume"])
-    df["log_total_weight"] = np.log1p(df["product_weight_g"])
     df["heavy_item_flag"] = (df["product_weight_g"] > 5000).astype(int)
     df["local_heavy"] = (
         (df["same_state"] == 1) & (df["product_weight_g"] > 5000)
@@ -164,7 +160,7 @@ def engineer_features(df, seller_volume_map, route_freq_map,
         city_density_map
     ).fillna(0)
     df["log_city_density"] = np.log1p(df["customer_city_order_density"])
-    df["log_clv"] = np.log1p(df["price"])
+    df["log_price"] = np.log1p(df["price"])
 
     df["payment_value_vs_order_value"] = (
         df["payment_value"] / df["order_total_price"].replace(0, np.nan)
@@ -192,7 +188,7 @@ def engineer_features(df, seller_volume_map, route_freq_map,
         df["log_total_order_weight"]
     )
     df["complex_heavy_order"] = df["category_complexity"] * df["log_total_order_weight"]
-    df["clv_x_complexity"] = df["log_clv"] * df["category_complexity"]
+    df["clv_x_complexity"] = df["log_price"] * df["category_complexity"]
     df["weight_x_sellers"] = df["log_total_order_weight"] * df["unique_sellers_per_order"]
     df["operational_stress"] = (
         df["log_approval_delay"].fillna(0) +
@@ -210,7 +206,7 @@ def engineer_features(df, seller_volume_map, route_freq_map,
         df["shipping_limit_days"] * df["category_complexity"]
     )
     df["shipping_window_x_clv"] = (
-        df["shipping_window_x_complexity"] * df["log_clv"]
+        df["shipping_window_x_complexity"] * df["log_price"]
     )
     df["shipping_window_x_seller_age"] = (
         df["shipping_limit_days"] * df["log_seller_age"]
@@ -253,7 +249,7 @@ def engineer_features(df, seller_volume_map, route_freq_map,
     ).replace([np.inf, -np.inf], np.nan)
 
     df["city_density_x_seller_age"] = df["log_city_density"] * df["log_seller_age"]
-    df["city_density_x_clv"] = df["log_city_density"] * df["log_clv"]
+    df["city_density_x_clv"] = df["log_city_density"] * df["log_price"]
     df["city_density_x_weight_sellers"] = df["log_city_density"] * df["weight_x_sellers"]
     df["city_density_x_operational_stress"] = (
         df["log_city_density"] * df["operational_stress"]
@@ -396,9 +392,8 @@ num_attribs = [
     "holiday_pressure", "fast_season",
     "daily_order_count", "rolling_7d_orders", "log_rolling_7d",
     "route_frequency", "rare_route_flag", "route_variability",
-    "state_pair_cat", "state_pair_avg_days",
-    "customer_state_avg_days", "seller_state_avg_days",
-    "customer_state_cat", "seller_state_cat",
+    "state_pair_avg_days",
+    "customer_state_avg_days", "seller_state_avg_days", 
     "shipping_limit_days", "seller_processing_window",
     "payment_approval_delay", "log_approval_delay",
     "category_complexity", "log_catalog_age",
@@ -410,7 +405,7 @@ num_attribs = [
     "seller_avg_review", "seller_review_volatility",
     "seller_high_installment_rate", "seller_age_days", "log_seller_age",
     "log_order_value_ratio", "log_review_comment",
-    "customer_city_order_density", "log_city_density", "log_clv",
+    "customer_city_order_density", "log_city_density", "log_price",
     "freight_burden", "complex_heavy_order", "clv_x_complexity",
     "weight_x_sellers", "operational_stress",
     "pressure_x_weight_sellers", "pressure_x_operational_stress",
