@@ -1,3 +1,5 @@
+# This is a scratch file, not a runnable pipeline.
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
