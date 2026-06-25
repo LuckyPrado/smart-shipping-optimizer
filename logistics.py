@@ -315,29 +315,25 @@ def engineer_features(df, seller_volume_map, route_freq_map,
 logistics = load_data()
 print("Data loaded:", logistics.shape)
 
-logistics["estimated_delivery_days"] = (
-    logistics["order_estimated_delivery_date"] - logistics["order_purchase_timestamp"]
-).dt.days
-logistics = logistics.dropna(subset=["estimated_delivery_days", "order_delivered_customer_date"])
+logistics["actual_delivery_days"] = (logistics["order_delivered_customer_date"] - logistics["order_purchase_timestamp"]).dt.days
+
+logistics = logistics.dropna(subset=["actual_delivery_days", "order_delivered_customer_date"])
 
 train_set, test_set = train_test_split(logistics, test_size=0.2, random_state=42)
 print(f"Train: {len(train_set)} | Test: {len(test_set)}")
 
 train_set = train_set.dropna(subset=["product_weight_g", "freight_value", "price"])
 train_set = train_set.copy()
-train_set["estimated_delivery_days"] = (
-    train_set["order_estimated_delivery_date"] - train_set["order_purchase_timestamp"]
-).dt.days
 train_set["state_pair"] = train_set["seller_state"] + "_" + train_set["customer_state"]
 train_set["purchase_date"] = train_set["order_purchase_timestamp"].dt.date
 
 #training maps
 seller_volume_map = train_set.groupby("seller_id")["order_id"].count()
 route_freq_map = train_set.groupby("state_pair")["order_id"].count()
-state_pair_avg_map = train_set.groupby("state_pair")["estimated_delivery_days"].mean()
-customer_state_avg_map = train_set.groupby("customer_state")["estimated_delivery_days"].mean()
-seller_state_avg_map = train_set.groupby("seller_state")["estimated_delivery_days"].mean()
-route_variability_map = train_set.groupby("state_pair")["estimated_delivery_days"].std()
+state_pair_avg_map = train_set.groupby("state_pair")["actual_delivery_days"].mean()
+customer_state_avg_map = train_set.groupby("customer_state")["actual_delivery_days"].mean()
+seller_state_avg_map = train_set.groupby("seller_state")["actual_delivery_days"].mean()
+route_variability_map = train_set.groupby("state_pair")["actual_delivery_days"].std()
 seller_avg_review_map = train_set.groupby("seller_id")["review_score"].mean()
 seller_review_volatility_map = train_set.groupby("seller_id")["review_score"].std().fillna(0)
 seller_high_installment_map = train_set.groupby("seller_id")["payment_installments"].apply(
@@ -362,8 +358,8 @@ category_avg_photos_map = train_set.groupby("product_category_name")["product_ph
 city_seller_concentration_map = train_set.groupby("customer_city")["seller_state"].nunique()
 
 #feature engineering
-logistics_train = train_set.drop("estimated_delivery_days", axis=1)
-logistics_labels = train_set["estimated_delivery_days"].copy()
+logistics_train = train_set.drop("actual_delivery_days", axis=1)
+logistics_labels = train_set["actual_delivery_days"].copy()
 
 logistics_train = engineer_features(
     logistics_train, seller_volume_map, route_freq_map,
@@ -484,13 +480,10 @@ print(f"Worst fold:  {xgb_scores.max():.4f} days")
 #test evaluation
 print("\nEvaluating on held-out test set...")
 test_set_clean = test_set.dropna(subset=["product_weight_g", "freight_value", "price"]).copy()
-test_set_clean["estimated_delivery_days"] = (
-    test_set_clean["order_estimated_delivery_date"] - test_set_clean["order_purchase_timestamp"]
-).dt.days
-test_labels = test_set_clean["estimated_delivery_days"].copy()
+test_labels = test_set_clean["actual_delivery_days"].copy()
 
 test_engineered = engineer_features(
-    test_set_clean.drop("estimated_delivery_days", axis=1),
+    test_set_clean.drop("actual_delivery_days", axis=1),
     seller_volume_map, route_freq_map,
     state_pair_avg_map, customer_state_avg_map, seller_state_avg_map,
     route_variability_map, seller_avg_review_map, seller_review_volatility_map,
