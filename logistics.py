@@ -262,17 +262,15 @@ def engineer_features(df, seller_volume_map, route_freq_map,
     df["seller_hub_distance"] = haversine(df["seller_lat"].to_numpy(), df["seller_lng"].to_numpy(), SP_LAT, SP_LNG)
         
     df["seller_customer_state_reach"] = df["seller_id"].map(
-        df.groupby("seller_id")["customer_state"].nunique()
-    )
-    df["seller_price_range"] = df["seller_id"].map(
-        df.groupby("seller_id")["price"].apply(lambda x: x.max() - x.min())
-    )
+        seller_state_reach_map).fillna(0)
+    
+    df["seller_price_range"] = df["seller_id"].map(seller_price_range_map).fillna(0)
+
     df["photos_vs_category_avg"] = (
         df["product_photos_qty"] /
         df["product_category_name"].map(
-            df.groupby("product_category_name")["product_photos_qty"].mean()
-        ).replace(0, np.nan)
-    ).replace([np.inf, -np.inf], np.nan)
+            category_avg_photos_map).replace(0, np.nan).replace([np.inf, -np.inf], np.nan)
+    )
     df["order_item_diversity"] = df["order_id"].map(
         df.groupby("order_id")["product_category_name"].nunique()
     )
@@ -295,8 +293,7 @@ def engineer_features(df, seller_volume_map, route_freq_map,
         df["payment_sequential"] * df["category_complexity"]
     )
     df["customer_city_seller_concentration"] = df["customer_city"].map(
-        df.groupby("customer_city")["seller_state"].nunique()
-    ).fillna(0)
+        city_seller_concentration_map).fillna(0)
     df["shipping_window_x_seller_review"] = (
         df["shipping_limit_days"] * df["seller_avg_review"].fillna(3)
     ).replace([np.inf, -np.inf], np.nan)
