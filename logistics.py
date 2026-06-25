@@ -115,12 +115,6 @@ def engineer_features(df, seller_volume_map, route_freq_map,
         seller_state_avg_map.mean()
     )
 
-    df["shipping_limit_days"] = (
-        df["shipping_limit_date"] - df["order_purchase_timestamp"]
-    ).dt.days
-    df["seller_processing_window"] = (
-        df["shipping_limit_date"] - df["order_approved_at"]
-    ).dt.total_seconds() / 3600
     df["payment_approval_delay"] = (
         df["order_approved_at"] - df["order_purchase_timestamp"]
     ).dt.total_seconds() / 3600
@@ -202,52 +196,7 @@ def engineer_features(df, seller_volume_map, route_freq_map,
         df["daily_order_count"] * df["operational_stress"]
     ).replace([np.inf, -np.inf], np.nan)
 
-    df["shipping_window_x_complexity"] = (
-        df["shipping_limit_days"] * df["category_complexity"]
-    )
-    df["shipping_window_x_clv"] = (
-        df["shipping_window_x_complexity"] * df["log_price"]
-    )
-    df["shipping_window_x_seller_age"] = (
-        df["shipping_limit_days"] * df["log_seller_age"]
-    )
-    df["shipping_window_x_operational_stress"] = (
-        df["shipping_limit_days"] * df["operational_stress"]
-    )
-    df["shipping_window_x_city_density"] = (
-        df["shipping_window_x_complexity"] * df["log_city_density"]
-    )
-    df["shipping_window_x_installment_lag"] = (
-        df["shipping_limit_days"] *
-        df["installment_approval_lag"].replace([np.inf, -np.inf], np.nan)
-    )
-    df["high_installment_x_shipping_window"] = (
-        df["high_complexity_installment"] * df["shipping_limit_days"]
-    )
-    df["load_x_shipping_window"] = (
-        df["log_rolling_7d"] * df["shipping_limit_days"]
-    )
-
-    df["processing_window_x_complexity"] = (
-        df["seller_processing_window"] * df["category_complexity"]
-    ).replace([np.inf, -np.inf], np.nan)
-    df["processing_window_x_clv_complexity"] = (
-        df["seller_processing_window"] * df["clv_x_complexity"]
-    ).replace([np.inf, -np.inf], np.nan)
-    df["processing_window_x_seller_age"] = (
-        df["seller_processing_window"] * df["log_seller_age"]
-    ).replace([np.inf, -np.inf], np.nan)
-    df["processing_window_x_weight"] = (
-        df["seller_processing_window"] * df["log_total_order_weight"]
-    ).replace([np.inf, -np.inf], np.nan)
-    df["processing_window_x_installments"] = (
-        df["seller_processing_window"] * df["log_installments"]
-    ).replace([np.inf, -np.inf], np.nan)
-    df["payment_complexity_x_processing"] = (
-        df["payment_value_vs_order_value"].replace([np.inf, -np.inf], np.nan) *
-        df["seller_processing_window"]
-    ).replace([np.inf, -np.inf], np.nan)
-
+     
     df["city_density_x_seller_age"] = df["log_city_density"] * df["log_seller_age"]
     df["city_density_x_clv"] = df["log_city_density"] * df["log_price"]
     df["city_density_x_weight_sellers"] = df["log_city_density"] * df["weight_x_sellers"]
@@ -290,12 +239,6 @@ def engineer_features(df, seller_volume_map, route_freq_map,
     )
     df["customer_city_seller_concentration"] = df["customer_city"].map(
         city_seller_concentration_map).fillna(0)
-    df["shipping_window_x_seller_review"] = (
-        df["shipping_limit_days"] * df["seller_avg_review"].fillna(3)
-    ).replace([np.inf, -np.inf], np.nan)
-    df["seller_hub_distance_x_shipping_window"] = (
-        df["seller_hub_distance"] * df["shipping_limit_days"]
-    ).replace([np.inf, -np.inf], np.nan)
     df["seller_hub_distance_x_complexity"] = (
         df["seller_hub_distance"] * df["category_complexity"]
     ).replace([np.inf, -np.inf], np.nan)
@@ -390,7 +333,6 @@ num_attribs = [
     "route_frequency", "rare_route_flag", "route_variability",
     "state_pair_avg_days",
     "customer_state_avg_days", "seller_state_avg_days", 
-    "shipping_limit_days", "seller_processing_window",
     "payment_approval_delay", "log_approval_delay",
     "category_complexity", "log_catalog_age",
     "items_per_order", "unique_sellers_per_order",
@@ -405,19 +347,11 @@ num_attribs = [
     "freight_burden", "complex_heavy_order", "clv_x_complexity",
     "weight_x_sellers", "operational_stress",
     "pressure_x_weight_sellers", "pressure_x_operational_stress",
-    "shipping_window_x_complexity", "shipping_window_x_clv",
-    "shipping_window_x_seller_age", "shipping_window_x_operational_stress",
-    "shipping_window_x_city_density", "shipping_window_x_installment_lag",
-    "high_installment_x_shipping_window", "load_x_shipping_window",
-    "processing_window_x_complexity", "processing_window_x_clv_complexity",
-    "processing_window_x_seller_age", "processing_window_x_weight",
-    "processing_window_x_installments", "payment_complexity_x_processing",
     "city_density_x_seller_age", "city_density_x_clv",
     "city_density_x_weight_sellers", "city_density_x_operational_stress",
     "seller_hub_distance", "seller_price_range", "max_item_price",
     "avg_installment_value", "weekend_purchase_x_installments",
     "payment_sequential_x_complexity", "customer_city_seller_concentration",
-    "shipping_window_x_seller_review", "seller_hub_distance_x_shipping_window",
     "seller_hub_distance_x_complexity", "seller_hub_distance_x_review",
     "seller_hub_distance_x_seller_age", "seller_reach_x_hub_distance",
     "order_diversity_x_sellers", "photos_vs_category_avg",
