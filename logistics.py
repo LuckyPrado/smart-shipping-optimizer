@@ -11,7 +11,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler, TargetEncoder
 from sklearn.pipeline import make_pipeline
 from sklearn.compose import ColumnTransformer
-from sklearn.metrics import root_mean_squared_error
+from sklearn.metrics import root_mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import cross_val_score
 from sklearn.dummy import DummyRegressor
 from xgboost import XGBRegressor
@@ -422,17 +422,40 @@ test_engineered = engineer_features(
 
 test_preds = xgb_reg.predict(test_engineered)
 test_rmse = root_mean_squared_error(test_labels, test_preds)
+test_mae = mean_absolute_error(test_labels, test_preds)
+test_r2 = r2_score(test_labels, test_preds)
 
 # naive baseline on the SAME test set: predict the training mean for every order
 dummy_preds = dummy_regr.predict(test_engineered)
 dummy_rmse = root_mean_squared_error(test_labels, dummy_preds)
+dummy_mae = mean_absolute_error(test_labels, dummy_preds)
 
-print(f"\nNaive baseline (mean) RMSE: {dummy_rmse:.4f} days")
-print(f"Held-out test RMSE:         {test_rmse:.4f} days")
+print(f"\nNaive baseline (mean) RMSE: {dummy_rmse:.4f} days | MAE: {dummy_mae:.4f} days")
+print(f"Held-out test RMSE:         {test_rmse:.4f} days | MAE: {test_mae:.4f} days")
+print(f"Test R2:                    {test_r2:.4f}")
 print(f"Beats baseline by:          {dummy_rmse - test_rmse:.4f} days "
       f"({(1 - test_rmse / dummy_rmse) * 100:.1f}% lower error)")
 print(f"CV mean RMSE:               {xgb_scores.mean():.4f} days")
 print(f"Overfitting gap:            {xgb_scores.mean() - test_rmse:.4f} days")
+
+# error broken down by customer region (where do predictions hurt most?)
+print("\nError by customer region:")
+region_report = pd.DataFrame({
+    "customer_region": test_engineered["customer_region"].values,
+    "actual": test_labels.values,
+    "pred": test_preds,
+})
+region_rows = []
+for region, grp in region_report.groupby("customer_region"):
+    region_rows.append({
+        "region": region,
+        "n": len(grp),
+        "rmse": root_mean_squared_error(grp["actual"], grp["pred"]),
+        "mae": mean_absolute_error(grp["actual"], grp["pred"]),
+    })
+region_table = pd.DataFrame(region_rows).sort_values("rmse", ascending=False)
+print(region_table.to_string(index=False,
+      formatters={"rmse": "{:.4f}".format, "mae": "{:.4f}".format}))
 
 #model persistence
 model_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -448,6 +471,9 @@ model_artifact = {
     "cv_mean_rmse": xgb_scores.mean(),
     "cv_std_rmse": xgb_scores.std(),
     "test_rmse": test_rmse,
+    "test_mae": test_mae,
+    "test_r2": test_r2,
+    "baseline_rmse": dummy_rmse,
     "trained_at": model_timestamp,
     "n_features": len(num_attribs) + len(cat_attribs),
     "maps": {
