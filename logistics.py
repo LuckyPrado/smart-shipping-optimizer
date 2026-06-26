@@ -13,6 +13,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import root_mean_squared_error
 from sklearn.model_selection import cross_val_score
+from sklearn.dummy import DummyRegressor
 from xgboost import XGBRegressor
 import pickle 
 from datetime import datetime
@@ -359,6 +360,11 @@ def make_preprocessing():
         ("target", TargetEncoder(), target_attribs)
     ])
 
+# Naive baseline: predict the training-mean delivery time for every order.
+# Scored on the held-out test set below, the same way XGBoost is.
+dummy_regr = DummyRegressor(strategy="mean")
+dummy_regr.fit(logistics_train, logistics_labels)
+
 
 #model training
 print("\nTraining XGBoost conservative baseline...")
@@ -391,7 +397,7 @@ xgb_scores = -cross_val_score(
     verbose=2
 )
 
-print("\nXGBoost Conservative Baseline Results:")
+print("\nXGBoost Conservative Results:")
 print(pd.Series(xgb_scores).describe())
 print(f"\nMean RMSE:   {xgb_scores.mean():.4f} days")
 print(f"Std RMSE:    {xgb_scores.std():.4f} days")
@@ -416,9 +422,17 @@ test_engineered = engineer_features(
 
 test_preds = xgb_reg.predict(test_engineered)
 test_rmse = root_mean_squared_error(test_labels, test_preds)
-print(f"\nHeld-out test RMSE: {test_rmse:.4f} days")
-print(f"CV mean RMSE:       {xgb_scores.mean():.4f} days")
-print(f"Overfitting gap:    {xgb_scores.mean() - test_rmse:.4f} days")
+
+# naive baseline on the SAME test set: predict the training mean for every order
+dummy_preds = dummy_regr.predict(test_engineered)
+dummy_rmse = root_mean_squared_error(test_labels, dummy_preds)
+
+print(f"\nNaive baseline (mean) RMSE: {dummy_rmse:.4f} days")
+print(f"Held-out test RMSE:         {test_rmse:.4f} days")
+print(f"Beats baseline by:          {dummy_rmse - test_rmse:.4f} days "
+      f"({(1 - test_rmse / dummy_rmse) * 100:.1f}% lower error)")
+print(f"CV mean RMSE:               {xgb_scores.mean():.4f} days")
+print(f"Overfitting gap:            {xgb_scores.mean() - test_rmse:.4f} days")
 
 #model persistence
 model_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
