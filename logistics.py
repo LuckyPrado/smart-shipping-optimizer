@@ -7,7 +7,7 @@ import pickle
 from datetime import datetime
 
 import pandas as pd
-from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler, TargetEncoder
 from sklearn.pipeline import make_pipeline
@@ -103,41 +103,47 @@ def main():
     dummy_regr = DummyRegressor(strategy="mean")
     dummy_regr.fit(logistics_train, logistics_labels)
 
-    print("\nTraining XGBoost conservative baseline...")
-    xgb_reg = make_pipeline(make_preprocessing(), XGBRegressor(
-        n_estimators=500,
-        learning_rate=0.05,
-        max_depth=6,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        min_child_weight=5,
-        gamma=0.1,
-        reg_alpha=0.5,
-        reg_lambda=1.5,
-        random_state=42,
-        n_jobs=-1,
-        tree_method="hist",
-        early_stopping_rounds=None,
-    ))
-    xgb_reg.fit(logistics_train, logistics_labels)
-
-    # Cross validation (time-aware: always train on the past, validate on the future).
-    print("Running TimeSeriesSplit cross validation...")
-    tscv = TimeSeriesSplit(n_splits=10)
-    xgb_scores = -cross_val_score(
-        xgb_reg, logistics_train, logistics_labels,
-        scoring="neg_root_mean_squared_error",
-        cv=tscv,
-        n_jobs=-1,
-        verbose=2,
+    # Hyperparameter search over a time-aware CV (always train on the past, validate
+    # on the future). The search runs sequentially (n_jobs=1) -- this machine's
+    # parallel CV backend has crashed before -- while XGBoost uses threads per fit.
+    # Budget is deliberately small (n_iter * 3 folds).
+    print("\nTuning XGBoost hyperparameters with RandomizedSearchCV...")
+    base_pipeline = make_pipeline(
+        make_preprocessing(),
+        XGBRegressor(
+            objective="reg:squarederror",
+            tree_method="hist",
+            random_state=42,
+            n_jobs=-1,
+        ),
     )
+    param_distributions = {
+        "xgbregressor__n_estimators": [200, 400, 600, 800],
+        "xgbregressor__max_depth": [3, 4, 5, 6, 8],
+        "xgbregressor__learning_rate": [0.02, 0.03, 0.05, 0.1, 0.2],
+        "xgbregressor__subsample": [0.6, 0.8, 1.0],
+        "xgbregressor__colsample_bytree": [0.6, 0.8, 1.0],
+        "xgbregressor__min_child_weight": [1, 3, 5, 10],
+    }
+    search = RandomizedSearchCV(
+        base_pipeline,
+        param_distributions=param_distributions,
+        n_iter=15,
+        scoring="neg_root_mean_squared_error",
+        cv=TimeSeriesSplit(n_splits=3),
+        n_jobs=1,
+        random_state=42,
+        verbose=1,
+        refit=True,   # refit the best config on all of train
+    )
+    search.fit(logistics_train, logistics_labels)
 
-    print("\nXGBoost Conservative Results:")
-    print(pd.Series(xgb_scores).describe())
-    print(f"\nMean RMSE:   {xgb_scores.mean():.4f} days")
-    print(f"Std RMSE:    {xgb_scores.std():.4f} days")
-    print(f"Best fold:   {xgb_scores.min():.4f} days")
-    print(f"Worst fold:  {xgb_scores.max():.4f} days")
+    xgb_reg = search.best_estimator_
+    cv_rmse = -search.best_score_
+    print("\nBest hyperparameters:")
+    for key, val in search.best_params_.items():
+        print(f"  {key.replace('xgbregressor__', '')}: {val}")
+    print(f"Best CV RMSE: {cv_rmse:.4f} days")
 
     print("\nEvaluating on held-out test set...")
     test_set_clean = test_set.dropna(subset=["product_weight_g", "freight_value", "price"]).copy()
@@ -159,8 +165,8 @@ def main():
     print(f"Test R2:                    {test_r2:.4f}")
     print(f"Beats baseline by:          {dummy_rmse - test_rmse:.4f} days "
           f"({(1 - test_rmse / dummy_rmse) * 100:.1f}% lower error)")
-    print(f"CV mean RMSE:               {xgb_scores.mean():.4f} days")
-    print(f"Overfitting gap:            {xgb_scores.mean() - test_rmse:.4f} days")
+    print(f"CV mean RMSE (tuned):       {cv_rmse:.4f} days")
+    print(f"Overfitting gap:            {cv_rmse - test_rmse:.4f} days")
 
     # error broken down by customer region (where do predictions hurt most?)
     print("\nError by customer region:")
@@ -191,8 +197,8 @@ def main():
         "model": xgb_reg,
         "num_attribs": num_attribs,
         "cat_attribs": cat_attribs,
-        "cv_mean_rmse": xgb_scores.mean(),
-        "cv_std_rmse": xgb_scores.std(),
+        "cv_mean_rmse": cv_rmse,
+        "best_params": search.best_params_,
         "test_rmse": test_rmse,
         "test_mae": test_mae,
         "test_r2": test_r2,
