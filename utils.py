@@ -105,6 +105,7 @@ def load_data():
     df["shipping_limit_date"] = pd.to_datetime(df["shipping_limit_date"])
     df["order_estimated_delivery_date"] = pd.to_datetime(df["order_estimated_delivery_date"])
     df["order_delivered_customer_date"] = pd.to_datetime(df["order_delivered_customer_date"])
+    df["order_delivered_carrier_date"] = pd.to_datetime(df["order_delivered_carrier_date"])
 
     # save cache
     df.to_parquet(cache_file, index=False)
