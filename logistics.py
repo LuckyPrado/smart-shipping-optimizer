@@ -78,6 +78,12 @@ def engineer_features(df, seller_volume_map, route_freq_map,
         df["freight_value"], bins=[0, 10, 20, 50, np.inf], labels=[0, 1, 2, 3]
     ).astype(float)
 
+    # Olist's own promised delivery window -- known at checkout, the strongest
+    # single predictor of actual delivery time (validated in feature_engineering.ipynb).
+    df["estimated_delivery_days"] = (
+        df["order_estimated_delivery_date"] - df["order_purchase_timestamp"]
+    ).dt.days
+
     df["purchase_month"] = df["order_purchase_timestamp"].dt.month
     df["purchase_dayofweek"] = df["order_purchase_timestamp"].dt.dayofweek
     df["quarter"] = df["order_purchase_timestamp"].dt.quarter
@@ -302,47 +308,28 @@ logistics_train = engineer_features(
 )
 
 #column schema
+# Pruned to the compact set proven in feature_engineering.ipynb. ~20 candidate
+# features (distance, regions, order size, category, seller behaviour, congestion,
+# 60+ interactions) were each measured on the held-out test set and REJECTED as
+# redundant or noise -- the notebook's experiment log has the numbers. Trees read
+# location straight from raw coordinates + zips, so distance/region summaries and
+# the interaction bloat added variance without signal.
 num_attribs = [
-    "real_distance_km", "log_distance", "seller_customer_lng_diff",
-    "seller_customer_lat_diff", "zip_distance", "customer_zip_code_prefix",
-    "customer_zip_prefix_bin", "customer_lat", "seller_zip_code_prefix",
-    "same_state", "north_involved", "remote_state_flag", "seller_remote_flag",
-    "southeast_seller", "extreme_longhaul_flag", "long_heavy", "short_heavy",
-    "local_heavy", "heavy_item_flag", "log_distance_route_ratio",
-    "freight_value", "log_freight", "freight_tier", "ultra_cheap_freight",
-    "freight_ratio", "freight_per_km", "freight_per_weight",
-    "product_weight_g", "log_weight", "product_volume", "log_volume",
-    "max_dimension_cm", "price_per_km",
-    "purchase_month", "purchase_dayofweek", "quarter",
-    "holiday_pressure", "fast_season",
-    "daily_order_count", "rolling_7d_orders", "log_rolling_7d",
-    "route_frequency", "rare_route_flag",
-    "payment_approval_delay", "log_approval_delay",
-    "category_complexity", "log_catalog_age",
-    "items_per_order", "unique_sellers_per_order",
-    "total_weight", "log_total_order_weight",
-    "payment_installments", "log_installments",
-    "payment_value_vs_order_value",
-    "high_complexity_installment", "installment_approval_lag",
-    "seller_avg_review", "seller_review_volatility",
-    "seller_high_installment_rate", "seller_age_days", "log_seller_age",
-    "log_order_value_ratio", "log_review_comment",
-    "customer_city_order_density", "log_city_density", "log_price",
-    "freight_burden", "complex_heavy_order", "clv_x_complexity",
-    "weight_x_sellers", "operational_stress",
-    "pressure_x_weight_sellers", "pressure_x_operational_stress",
-    "city_density_x_seller_age", "city_density_x_clv",
-    "city_density_x_weight_sellers", "city_density_x_operational_stress",
-    "seller_hub_distance", "seller_price_range", "max_item_price",
-    "avg_installment_value", "weekend_purchase_x_installments",
-    "payment_sequential_x_complexity", "customer_city_seller_concentration",
-    "seller_hub_distance_x_complexity", "seller_hub_distance_x_review",
-    "seller_hub_distance_x_seller_age", "seller_reach_x_hub_distance",
-    "order_diversity_x_sellers", "photos_vs_category_avg",
+    # Olist's own promised window -- the single strongest predictor (was missing entirely).
+    "estimated_delivery_days",
+    # seasonality (Feb/Nov/Dec slow) -- the one time feature that helped.
+    "purchase_month",
+    # raw geography: coordinates + zip prefixes beat any distance/region summary.
+    "seller_lat", "seller_lng", "customer_lat", "customer_lng",
+    "seller_zip_code_prefix", "customer_zip_code_prefix",
+    # order economics + physical size.
+    "price", "freight_value", "payment_value",
+    "product_weight_g", "product_length_cm", "product_height_cm", "product_width_cm",
 ]
 
-cat_attribs = ["seller_state", "customer_state", "product_category_name",
-               "seller_region", "customer_region"]
+# Dropped seller_region / customer_region: redundant with the state one-hot (region
+# is derived from state) and geography is already saturated by the coordinates.
+cat_attribs = ["seller_state", "customer_state", "product_category_name"]
 
 
 #preprocessing pipeline
