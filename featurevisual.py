@@ -10,10 +10,12 @@ logistics["order_estimated_delivery_date"] = pd.to_datetime(logistics["order_est
 logistics["order_approved_at"] = pd.to_datetime(logistics["order_approved_at"])
 logistics["shipping_limit_date"] = pd.to_datetime(logistics["shipping_limit_date"])
 
-logistics["estimated_delivery_days"] = (
-    logistics["order_estimated_delivery_date"] - logistics["order_purchase_timestamp"]
+# Screen features against the ACTUAL delivery time (PR 5), not the leaky estimate.
+logistics["order_delivered_customer_date"] = pd.to_datetime(logistics["order_delivered_customer_date"])
+logistics["actual_delivery_days"] = (
+    logistics["order_delivered_customer_date"] - logistics["order_purchase_timestamp"]
 ).dt.days
-logistics = logistics.dropna(subset=["estimated_delivery_days"])
+logistics = logistics.dropna(subset=["actual_delivery_days"])
 
 logistics["product_volume"] = (
     logistics["product_length_cm"] *
@@ -202,6 +204,7 @@ logistics["log_surface_area"] = np.log1p(logistics["product_surface_area"])
 logistics["log_days_since_launch"] = np.log1p(logistics["days_since_platform_launch"])
 logistics["log_payment_value_x_installments"] = np.log1p(logistics["payment_value_x_installments"])
 logistics["log_order_total_volume"] = np.log1p(logistics["order_total_volume"])
+logistics["log_order_total_price_x_installments"] = np.log1p(logistics["order_total_price_x_installments"])
 
 features = {
     "seller_zip_prefix_bin": logistics["seller_zip_prefix_bin"],
@@ -238,7 +241,7 @@ features = {
     "items_per_seller": logistics["items_per_seller"],
     "order_price_x_unique_sellers": logistics["order_price_x_unique_sellers"],
     "order_total_price_x_installments": logistics["order_total_price_x_installments"],
-    "log_order_total_price_x_installments": logistics["log_payment_value_x_installments"],
+    "log_order_total_price_x_installments": logistics["log_order_total_price_x_installments"],
     "seller_customer_state_pair_frequency": logistics["seller_customer_state_pair_frequency"],
     "is_same_city": logistics["is_same_city"],
     "is_neighboring_state": logistics["is_neighboring_state"],
@@ -254,7 +257,7 @@ print("-" * 65)
 results = {}
 for feat, series in features.items():
     clean = series.replace([np.inf, -np.inf], np.nan).dropna()
-    corr = clean.corr(logistics.loc[clean.index, "estimated_delivery_days"])
+    corr = clean.corr(logistics.loc[clean.index, "actual_delivery_days"])
     results[feat] = corr
     keep = "YES" if abs(corr) > 0.03 else "WEAK"
     print(f"{feat:<45} {corr:>10.4f} {keep:>8}")
@@ -266,17 +269,17 @@ print("=" * 60)
 for feat, corr in sorted(results.items(), key=lambda x: abs(x[1]), reverse=True):
     if abs(corr) < 0.03:
         continue
-    clean = logistics[[feat, "estimated_delivery_days"]].replace([np.inf, -np.inf], np.nan).dropna()
+    clean = logistics[[feat, "actual_delivery_days"]].replace([np.inf, -np.inf], np.nan).dropna()
     if len(clean) < 100:
         continue
     try:
         bins = pd.qcut(clean[feat], 5, duplicates="drop")
-        quintile_stats = clean.groupby(bins, observed=True)["estimated_delivery_days"].agg(["mean", "std", "count"])
+        quintile_stats = clean.groupby(bins, observed=True)["actual_delivery_days"].agg(["mean", "std", "count"])
         spread = quintile_stats["mean"].max() - quintile_stats["mean"].min()
         print(f"\n=== {feat} (r={corr:.4f}, spread={spread:.2f} days) ===")
         print(quintile_stats.to_string())
     except Exception:
-        flag_stats = logistics.groupby(feat)["estimated_delivery_days"].agg(["mean", "std", "count"])
+        flag_stats = logistics.groupby(feat)["actual_delivery_days"].agg(["mean", "std", "count"])
         spread = flag_stats["mean"].max() - flag_stats["mean"].min()
         print(f"\n=== {feat} (r={corr:.4f}, spread={spread:.2f} days) ===")
         print(flag_stats.to_string())
@@ -288,16 +291,16 @@ print(f"\n{'Feature':<45} {'Pearson r':>10} {'Spread':>8} {'Add?':>6}")
 print("-" * 71)
 
 for feat, corr in sorted(results.items(), key=lambda x: abs(x[1]), reverse=True):
-    clean = logistics[[feat, "estimated_delivery_days"]].replace([np.inf, -np.inf], np.nan).dropna()
+    clean = logistics[[feat, "actual_delivery_days"]].replace([np.inf, -np.inf], np.nan).dropna()
     if len(clean) < 100:
         spread = 0.0
     else:
         try:
             bins = pd.qcut(clean[feat], 5, duplicates="drop")
-            quintile_means = clean.groupby(bins, observed=True)["estimated_delivery_days"].mean()
+            quintile_means = clean.groupby(bins, observed=True)["actual_delivery_days"].mean()
             spread = quintile_means.max() - quintile_means.min()
         except Exception:
-            flag_means = logistics.groupby(feat)["estimated_delivery_days"].mean()
+            flag_means = logistics.groupby(feat)["actual_delivery_days"].mean()
             spread = flag_means.max() - flag_means.min()
     add = "YES" if abs(corr) > 0.03 and spread > 1.0 else "NO"
     print(f"{feat:<45} {corr:>10.4f} {spread:>8.2f} {add:>6}")
