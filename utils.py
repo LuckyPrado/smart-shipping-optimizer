@@ -80,6 +80,7 @@ def load_data():
     geo = geo.groupby("geolocation_zip_code_prefix")[["geolocation_lat", "geolocation_lng"]].mean()
     print("Done", flush=True)
 
+    n_orders = len(orders)
     df = orders.merge(order_items, on="order_id")
     df = df.merge(products, on="product_id")
     df = df.merge(sellers, on="seller_id")
@@ -88,6 +89,11 @@ def load_data():
     df = df.rename(columns={"geolocation_lat": "seller_lat", "geolocation_lng": "seller_lng"})
     df = df.merge(geo, left_on="customer_zip_code_prefix", right_index=True)
     df = df.rename(columns={"geolocation_lat": "customer_lat", "geolocation_lng": "customer_lng"})
+    print(f"Orders surviving inner merges: {n_orders} -> {df['order_id'].nunique()}")
+    n0 = len(df)
+    df = df[df["order_status"] == "delivered"]
+    print(f"Filtered delivered orders: {n0} -> {len(df)}")
+
     payments_agg = order_payments.groupby("order_id").agg(
         payment_installments=("payment_installments", "max"),
         payment_type=("payment_type", lambda x: x.mode()[0]),
@@ -100,6 +106,8 @@ def load_data():
         review_comment_length=("review_comment_message", lambda x: x.dropna().str.len().mean())
     ).reset_index()
     df = df.merge(reviews_agg, on="order_id", how="left")
+    print(f"DataFrame after merging: {len(df)}")
+
     df["order_purchase_timestamp"] = pd.to_datetime(df["order_purchase_timestamp"])
     df["order_approved_at"] = pd.to_datetime(df["order_approved_at"])
     df["shipping_limit_date"] = pd.to_datetime(df["shipping_limit_date"])
