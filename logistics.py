@@ -52,6 +52,8 @@ def engineer_features(df):
 num_attribs = [
     "estimated_delivery_days",   # strongest single predictor
     "purchase_month",            # seasonality
+    "order_item_count",          # bigger orders plausibly ship slower
+    "order_unique_sellers",      # multi-seller orders ship in parts
     # raw geography: coordinates + zip prefixes beat any distance/region summary.
     "seller_lat", "seller_lng", "customer_lat", "customer_lng",
     "seller_zip_code_prefix", "customer_zip_code_prefix",

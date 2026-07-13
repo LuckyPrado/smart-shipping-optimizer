@@ -108,6 +108,59 @@ def load_data():
     df = df.merge(reviews_agg, on="order_id", how="left")
     print(f"DataFrame after merging: {len(df)}")
 
+    # ---- Aggregate order items to one row per order (PR 10.2) ----
+    # Sort heaviest item first so "first" picks the heaviest item's category
+    # (and, incidentally, that seller's geography for multi-seller orders).
+    df = df.sort_values("product_weight_g", ascending=False)
+
+    agg_spec = {
+        # sum: order economics + total shipment weight
+        "price": "sum",
+        "freight_value": "sum",
+        "product_weight_g": "sum",
+        # max: the biggest box drives handling
+        "product_length_cm": "max",
+        "product_height_cm": "max",
+        "product_width_cm": "max",
+        # counts -> two new features
+        "product_id": "count",     # renamed to order_item_count below
+        "seller_id": "nunique",    # renamed to order_unique_sellers below
+        # heaviest item's category (df is sorted by weight desc)
+        "product_category_name": "first",
+        # everything constant within an order
+        "order_status": "first",
+        "order_purchase_timestamp": "first",
+        "order_approved_at": "first",
+        "order_delivered_carrier_date": "first",
+        "order_delivered_customer_date": "first",
+        "order_estimated_delivery_date": "first",
+        "shipping_limit_date": "first",
+        "customer_id": "first",
+        "customer_state": "first",
+        "customer_zip_code_prefix": "first",
+        "customer_lat": "first",
+        "customer_lng": "first",
+        "seller_state": "first",
+        "seller_zip_code_prefix": "first",
+        "seller_lat": "first",
+        "seller_lng": "first",
+        # payment + review columns are already order-level, so "first" just carries them
+        "payment_installments": "first",
+        "payment_type": "first",
+        "payment_value": "first",
+        "payment_sequential": "first",
+        "review_score": "first",
+        "review_comment_length": "first",
+    }
+
+    df = df.groupby("order_id", as_index=False).agg(agg_spec)
+    df = df.rename(columns={
+        "product_id": "order_item_count",
+        "seller_id": "order_unique_sellers",
+    })
+    print(f"Aggregated to one row per order: {len(df)}")
+
+
     df["order_purchase_timestamp"] = pd.to_datetime(df["order_purchase_timestamp"])
     df["order_approved_at"] = pd.to_datetime(df["order_approved_at"])
     df["shipping_limit_date"] = pd.to_datetime(df["shipping_limit_date"])
