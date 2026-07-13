@@ -97,7 +97,14 @@ def main():
     test_set = logistics.iloc[split_idx:]
     print(f"Train: {len(train_set)} | Test: {len(test_set)}")
 
-    train_set = train_set.dropna(subset=["product_weight_g", "freight_value", "price"]).copy()
+    # PR 10.3: these rows used to be dropped from train AND test; now the pipeline's
+    # median imputer handles them. Report how many the old dropna would have removed.
+    impute_cols = ["product_weight_g", "freight_value", "price"]
+    n_missing_train = train_set[impute_cols].isna().any(axis=1).sum()
+    n_missing_test = test_set[impute_cols].isna().any(axis=1).sum()
+    print(f"Rows with missing {impute_cols} (kept + imputed, not dropped): "
+          f"train {n_missing_train} | test {n_missing_test}")
+
     logistics_train = engineer_features(train_set.drop("actual_delivery_days", axis=1))
     logistics_labels = train_set["actual_delivery_days"].copy()
 
@@ -148,9 +155,8 @@ def main():
     print(f"Best CV RMSE: {cv_rmse:.4f} days")
 
     print("\nEvaluating on held-out test set...")
-    test_set_clean = test_set.dropna(subset=["product_weight_g", "freight_value", "price"]).copy()
-    test_labels = test_set_clean["actual_delivery_days"].copy()
-    test_engineered = engineer_features(test_set_clean.drop("actual_delivery_days", axis=1))
+    test_labels = test_set["actual_delivery_days"].copy()
+    test_engineered = engineer_features(test_set.drop("actual_delivery_days", axis=1))
 
     test_preds = xgb_reg.predict(test_engineered)
     test_rmse = root_mean_squared_error(test_labels, test_preds)
