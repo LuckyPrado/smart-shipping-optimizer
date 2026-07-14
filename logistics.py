@@ -15,6 +15,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import root_mean_squared_error, mean_absolute_error, r2_score
 from sklearn.dummy import DummyRegressor
+from sklearn.base import clone
 from xgboost import XGBRegressor
 
 from utils import load_data, brazil_regions
@@ -192,6 +193,22 @@ def main():
     dummy_regr = DummyRegressor(strategy="mean")
     dummy_regr.fit(logistics_train, logistics_labels)
 
+    # ---- PR 13.1: recency weighting ----
+    # Most training data describes a slower (earlier) Olist than the evaluation window.
+    # Down-weight older orders: the weight halves every HALFLIFE_DAYS going back in time.
+    # sample_weight is a per-row fit argument, not an estimator hyperparameter, so it
+    # cannot live in param_distributions; the half-life is chosen by an explicit sweep on
+    # the VALIDATION window below (same discipline as the rest of PR 11-13).
+    train_end = train_set["order_purchase_timestamp"].max()
+    age_days = (train_end - train_set["order_purchase_timestamp"]).dt.days.values
+
+    def recency_weights(halflife):
+        if halflife is None:            # None == no weighting (uniform)
+            return None
+        return 0.5 ** (age_days / halflife)
+
+    HALFLIFE_TUNE = 120   # weighting used while the OTHER hyperparameters are searched
+
     # Hyperparameter search over a time-aware CV (always train on the past, validate
     # on the future). The search runs sequentially (n_jobs=1) -- this machine's
     # parallel CV backend has crashed before -- while XGBoost uses threads per fit.
@@ -225,7 +242,8 @@ def main():
         verbose=1,
         refit=True,   # refit the best config on all of train
     )
-    search.fit(logistics_train, logistics_labels)
+    search.fit(logistics_train, logistics_labels,
+               xgbregressor__sample_weight=recency_weights(HALFLIFE_TUNE))
 
     xgb_reg = search.best_estimator_
     cv_rmse = -search.best_score_
@@ -233,6 +251,24 @@ def main():
     for key, val in search.best_params_.items():
         print(f"  {key.replace('xgbregressor__', '')}: {val}")
     print(f"Best CV RMSE: {cv_rmse:.4f} days")
+
+    # Choose the recency half-life on VALIDATION, holding the tuned hyperparameters fixed.
+    # 100000 days is effectively "no decay" -- if it wins, weighting isn't helping.
+    print("\nTuning recency half-life on validation (tuned hyperparameters fixed)...")
+    val_labels = val_set["actual_delivery_days"]
+    val_X = engineer_features(val_set.drop("actual_delivery_days", axis=1))
+    best_hl, best_hl_rmse = None, float("inf")
+    for hl in [60, 120, 240, None]:
+        est = clone(search.best_estimator_)
+        est.fit(logistics_train, logistics_labels,
+                xgbregressor__sample_weight=recency_weights(hl))
+        hl_rmse = root_mean_squared_error(val_labels, est.predict(val_X))
+        tag = "no weighting" if hl is None else f"{hl}d"
+        print(f"  half-life {tag:>12}: val RMSE {hl_rmse:.4f}")
+        if hl_rmse < best_hl_rmse:
+            best_hl, best_hl_rmse, xgb_reg = hl, hl_rmse, est
+    print(f"Selected half-life: {'none' if best_hl is None else str(best_hl) + 'd'} "
+          f"(val RMSE {best_hl_rmse:.4f})")
 
     EVALUATE_ON_TEST = False   # flip to True exactly once, in PR 13's final commit
 
