@@ -6,6 +6,7 @@ from pathlib import Path
 import pickle
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
 from sklearn.impute import SimpleImputer
@@ -81,39 +82,56 @@ def make_preprocessing():
     ])
 
 
+def metric_panel(y_true, preds):
+    """Business-facing metric panel for one set of predictions.
+
+    late_rate  = fraction of orders that arrive LATER than predicted (broken promise);
+                 asymmetric on purpose -- under-promising loses customers, over-promising
+                 is a pleasant surprise, and RMSE hides that difference.
+    p90_ae     = 90th-percentile absolute error (tail behaviour RMSE only gestures at).
+    median_ae  = robust central error, unaffected by the 60+ day outliers.
+    """
+    y_true = np.asarray(y_true, dtype=float)
+    preds = np.asarray(preds, dtype=float)
+    abs_err = np.abs(y_true - preds)
+    return {
+        "rmse": root_mean_squared_error(y_true, preds),
+        "mae": mean_absolute_error(y_true, preds),
+        "median_ae": float(np.median(abs_err)),
+        "p90_ae": float(np.quantile(abs_err, 0.90)),
+        "late_%": float(np.mean(y_true > preds)) * 100.0,
+    }
+
+
 def evaluate(model, dummy, eval_set, label):
-    """Score the model and the naive baseline on one evaluation window."""
+    """Score the model against the naive-mean and Olist-estimate baselines."""
     y = eval_set["actual_delivery_days"].copy()
     X = engineer_features(eval_set.drop("actual_delivery_days", axis=1))
 
     preds = model.predict(X)
-    rmse = root_mean_squared_error(y, preds)
-    mae = mean_absolute_error(y, preds)
     r2 = r2_score(y, preds)
 
     dummy_preds = dummy.predict(X)
-    dummy_rmse = root_mean_squared_error(y, dummy_preds)
-    dummy_mae = mean_absolute_error(y, dummy_preds)
-
-    # Olist's own promised delivery window as a zero-model baseline -- it's already a
-    # column, so no fitting needed. It's padded (a promise, not a forecast), so the
-    # model should beat it comfortably; "beats the platform's own estimate by X days"
-    # is a far more persuasive claim than beating the training mean.
+    # Olist's own promised delivery window as a zero-model baseline -- already a column.
     olist_preds = X["estimated_delivery_days"]
-    olist_rmse = root_mean_squared_error(y, olist_preds)
-    olist_mae = mean_absolute_error(y, olist_preds)
 
-    print(f"\n=== {label} ===")
-    print(f"Naive baseline (mean) RMSE: {dummy_rmse:.4f} days | MAE: {dummy_mae:.4f} days")
-    print(f"Olist estimate RMSE:        {olist_rmse:.4f} days | MAE: {olist_mae:.4f} days")
-    print(f"{label} RMSE:               {rmse:.4f} days | MAE: {mae:.4f} days")
-    print(f"{label} R2:                 {r2:.4f}")
-    print(f"Beats naive baseline by:    {dummy_rmse - rmse:.4f} days "
-          f"({(1 - rmse / dummy_rmse) * 100:.1f}% lower error)")
-    print(f"Beats Olist estimate by:    {olist_rmse - rmse:.4f} days "
-          f"({(1 - rmse / olist_rmse) * 100:.1f}% lower error)")
+    model_panel = metric_panel(y, preds)
+    panel = pd.DataFrame([
+        {"predictor": "naive mean",     **metric_panel(y, dummy_preds)},
+        {"predictor": "Olist estimate", **metric_panel(y, olist_preds)},
+        {"predictor": "model (XGB)",    **model_panel},
+    ])
 
-    # error broken down by customer region (where do predictions hurt most?)
+    print(f"\n=== {label} ===   (R2 = {r2:.4f})")
+    print(panel.to_string(index=False, formatters={
+        "rmse":      "{:.2f}".format,
+        "mae":       "{:.2f}".format,
+        "median_ae": "{:.2f}".format,
+        "p90_ae":    "{:.2f}".format,
+        "late_%":    "{:.1f}".format,
+    }))
+
+    # error + late rate broken down by customer region (where do predictions hurt most?)
     print(f"\nError by customer region ({label}):")
     region_report = pd.DataFrame({
         "customer_region": X["customer_region"].values,
@@ -127,13 +145,17 @@ def evaluate(model, dummy, eval_set, label):
             "n": len(grp),
             "rmse": root_mean_squared_error(grp["actual"], grp["pred"]),
             "mae": mean_absolute_error(grp["actual"], grp["pred"]),
+            "late_%": float((grp["actual"] > grp["pred"]).mean()) * 100.0,
         })
     region_table = pd.DataFrame(region_rows).sort_values("rmse", ascending=False)
-    print(region_table.to_string(index=False,
-          formatters={"rmse": "{:.4f}".format, "mae": "{:.4f}".format}))
+    print(region_table.to_string(index=False, formatters={
+        "rmse": "{:.4f}".format, "mae": "{:.4f}".format, "late_%": "{:.1f}".format}))
 
-    return {"rmse": rmse, "mae": mae, "r2": r2,
-            "baseline_rmse": dummy_rmse, "olist_rmse": olist_rmse}
+    return {"rmse": model_panel["rmse"], "mae": model_panel["mae"], "r2": r2,
+            "median_ae": model_panel["median_ae"], "p90_ae": model_panel["p90_ae"],
+            "late_%": model_panel["late_%"],
+            "baseline_rmse": metric_panel(y, dummy_preds)["rmse"],
+            "olist_rmse": metric_panel(y, olist_preds)["rmse"]}
 
 
 def main():
