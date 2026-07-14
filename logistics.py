@@ -205,7 +205,8 @@ def main():
     print("\nScoring on the VALIDATION window (test stays frozen)...")
     val_metrics = evaluate(xgb_reg, dummy_regr, val_set, "Validation")
     print(f"\nCV mean RMSE (tuned):       {cv_rmse:.4f} days")
-    print(f"Overfitting gap:            {cv_rmse - val_metrics['rmse']:.4f} days")
+    # The difference between the cv_rmse and val_rmse it is not only fit, but also the drift due to the non-stationarity property of our data.
+    print(f"CV-vs-Holdout gap (drift + fit):            {cv_rmse - val_metrics['rmse']:.4f} days")
 
     if EVALUATE_ON_TEST:
         print("\n*** Touching the TEST set (one-shot, PR 13 final) ***")
