@@ -81,6 +81,49 @@ def make_preprocessing():
     ])
 
 
+def evaluate(model, dummy, eval_set, label):
+    """Score the model and the naive baseline on one evaluation window."""
+    y = eval_set["actual_delivery_days"].copy()
+    X = engineer_features(eval_set.drop("actual_delivery_days", axis=1))
+
+    preds = model.predict(X)
+    rmse = root_mean_squared_error(y, preds)
+    mae = mean_absolute_error(y, preds)
+    r2 = r2_score(y, preds)
+
+    dummy_preds = dummy.predict(X)
+    dummy_rmse = root_mean_squared_error(y, dummy_preds)
+    dummy_mae = mean_absolute_error(y, dummy_preds)
+
+    print(f"\n=== {label} ===")
+    print(f"Naive baseline (mean) RMSE: {dummy_rmse:.4f} days | MAE: {dummy_mae:.4f} days")
+    print(f"{label} RMSE:               {rmse:.4f} days | MAE: {mae:.4f} days")
+    print(f"{label} R2:                 {r2:.4f}")
+    print(f"Beats baseline by:          {dummy_rmse - rmse:.4f} days "
+          f"({(1 - rmse / dummy_rmse) * 100:.1f}% lower error)")
+
+    # error broken down by customer region (where do predictions hurt most?)
+    print(f"\nError by customer region ({label}):")
+    region_report = pd.DataFrame({
+        "customer_region": X["customer_region"].values,
+        "actual": y.values,
+        "pred": preds,
+    })
+    region_rows = []
+    for region, grp in region_report.groupby("customer_region"):
+        region_rows.append({
+            "region": region,
+            "n": len(grp),
+            "rmse": root_mean_squared_error(grp["actual"], grp["pred"]),
+            "mae": mean_absolute_error(grp["actual"], grp["pred"]),
+        })
+    region_table = pd.DataFrame(region_rows).sort_values("rmse", ascending=False)
+    print(region_table.to_string(index=False,
+          formatters={"rmse": "{:.4f}".format, "mae": "{:.4f}".format}))
+
+    return {"rmse": rmse, "mae": mae, "r2": r2, "baseline_rmse": dummy_rmse}
+
+
 def main():
     logistics = load_data()
     print("Data loaded:", logistics.shape)
@@ -90,20 +133,23 @@ def main():
     ).dt.days
     logistics = logistics.dropna(subset=["actual_delivery_days", "order_delivered_customer_date"])
 
-    # Time-based split: earliest 80% = train, latest 20% = test (no future leaking into the past).
+    # Time-based split: earliest 70% train, next 15% validation, latest 15% test.
+    # Test stays frozen until PR 13 (see EVALUATE_ON_TEST below); all decisions use validation.
     logistics = logistics.sort_values("order_purchase_timestamp")
-    split_idx = int(len(logistics) * 0.8)
-    train_set = logistics.iloc[:split_idx]
-    test_set = logistics.iloc[split_idx:]
-    print(f"Train: {len(train_set)} | Test: {len(test_set)}")
+    n = len(logistics)
+    train_set = logistics.iloc[: int(n* 0.70)]
+    val_set = logistics.iloc[int(n*0.70):int(n*0.85)]
+    test_set = logistics.iloc[int(n*0.85):] 
+    print(f"Train: {len(train_set)} | Validation: {len(val_set)} | Test: {len(test_set)}")
 
     # PR 10.3: these rows used to be dropped from train AND test; now the pipeline's
     # median imputer handles them. Report how many the old dropna would have removed.
     impute_cols = ["product_weight_g", "freight_value", "price"]
     n_missing_train = train_set[impute_cols].isna().any(axis=1).sum()
+    n_missing_val = val_set[impute_cols].isna().any(axis=1).sum()
     n_missing_test = test_set[impute_cols].isna().any(axis=1).sum()
     print(f"Rows with missing {impute_cols} (kept + imputed, not dropped): "
-          f"train {n_missing_train} | test {n_missing_test}")
+          f"train {n_missing_train} | validation {n_missing_val} | test {n_missing_test}")
 
     logistics_train = engineer_features(train_set.drop("actual_delivery_days", axis=1))
     logistics_labels = train_set["actual_delivery_days"].copy()
@@ -154,50 +200,22 @@ def main():
         print(f"  {key.replace('xgbregressor__', '')}: {val}")
     print(f"Best CV RMSE: {cv_rmse:.4f} days")
 
-    print("\nEvaluating on held-out test set...")
-    test_labels = test_set["actual_delivery_days"].copy()
-    test_engineered = engineer_features(test_set.drop("actual_delivery_days", axis=1))
+    EVALUATE_ON_TEST = False   # flip to True exactly once, in PR 13's final commit
 
-    test_preds = xgb_reg.predict(test_engineered)
-    test_rmse = root_mean_squared_error(test_labels, test_preds)
-    test_mae = mean_absolute_error(test_labels, test_preds)
-    test_r2 = r2_score(test_labels, test_preds)
+    print("\nScoring on the VALIDATION window (test stays frozen)...")
+    val_metrics = evaluate(xgb_reg, dummy_regr, val_set, "Validation")
+    print(f"\nCV mean RMSE (tuned):       {cv_rmse:.4f} days")
+    print(f"Overfitting gap:            {cv_rmse - val_metrics['rmse']:.4f} days")
 
-    # naive baseline on the SAME test set: predict the training mean for every order
-    dummy_preds = dummy_regr.predict(test_engineered)
-    dummy_rmse = root_mean_squared_error(test_labels, dummy_preds)
-    dummy_mae = mean_absolute_error(test_labels, dummy_preds)
-
-    print(f"\nNaive baseline (mean) RMSE: {dummy_rmse:.4f} days | MAE: {dummy_mae:.4f} days")
-    print(f"Held-out test RMSE:         {test_rmse:.4f} days | MAE: {test_mae:.4f} days")
-    print(f"Test R2:                    {test_r2:.4f}")
-    print(f"Beats baseline by:          {dummy_rmse - test_rmse:.4f} days "
-          f"({(1 - test_rmse / dummy_rmse) * 100:.1f}% lower error)")
-    print(f"CV mean RMSE (tuned):       {cv_rmse:.4f} days")
-    print(f"Overfitting gap:            {cv_rmse - test_rmse:.4f} days")
-
-    # error broken down by customer region (where do predictions hurt most?)
-    print("\nError by customer region:")
-    region_report = pd.DataFrame({
-        "customer_region": test_engineered["customer_region"].values,
-        "actual": test_labels.values,
-        "pred": test_preds,
-    })
-    region_rows = []
-    for region, grp in region_report.groupby("customer_region"):
-        region_rows.append({
-            "region": region,
-            "n": len(grp),
-            "rmse": root_mean_squared_error(grp["actual"], grp["pred"]),
-            "mae": mean_absolute_error(grp["actual"], grp["pred"]),
-        })
-    region_table = pd.DataFrame(region_rows).sort_values("rmse", ascending=False)
-    print(region_table.to_string(index=False,
-          formatters={"rmse": "{:.4f}".format, "mae": "{:.4f}".format}))
+    if EVALUATE_ON_TEST:
+        print("\n*** Touching the TEST set (one-shot, PR 13 final) ***")
+        evaluate(xgb_reg, dummy_regr, test_set, "TEST (frozen)")
+    else:
+        print("\nTEST set frozen (EVALUATE_ON_TEST=False) -- not scored this run.")
 
     # model persistence
     model_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_filename = f"xgb_delivery_model_{model_timestamp}_rmse{test_rmse:.4f}.pkl"
+    model_filename = f"xgb_delivery_model_{model_timestamp}_valrmse{val_metrics['rmse']:.4f}.pkl"
     model_path = Path(__file__).resolve().parent / "models" / model_filename
     model_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -207,10 +225,10 @@ def main():
         "cat_attribs": cat_attribs,
         "cv_mean_rmse": cv_rmse,
         "best_params": search.best_params_,
-        "test_rmse": test_rmse,
-        "test_mae": test_mae,
-        "test_r2": test_r2,
-        "baseline_rmse": dummy_rmse,
+        "val_rmse": val_metrics["rmse"],
+        "val_mae": val_metrics["mae"],
+        "val_r2": val_metrics["r2"],
+        "baseline_rmse": val_metrics["baseline_rmse"],
         "trained_at": model_timestamp,
         "n_features": len(num_attribs) + len(cat_attribs),
     }
