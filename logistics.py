@@ -12,7 +12,7 @@ from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler, TargetEncoder
 from sklearn.pipeline import make_pipeline
-from sklearn.compose import ColumnTransformer
+from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.metrics import root_mean_squared_error, mean_absolute_error, r2_score
 from sklearn.dummy import DummyRegressor
 from sklearn.base import clone
@@ -214,22 +214,34 @@ def main():
     # parallel CV backend has crashed before -- while XGBoost uses threads per fit.
     # Budget is deliberately small (n_iter * 3 folds).
     print("\nTuning XGBoost hyperparameters with RandomizedSearchCV...")
-    base_pipeline = make_pipeline(
-        make_preprocessing(),
-        XGBRegressor(
-            objective="reg:squarederror",
-            tree_method="hist",
-            random_state=42,
-            n_jobs=-1,
+    # PR 13.3: delivery times are right-skewed with a long tail (60+ day outliers),
+    # so RMSE on the raw target is dominated by the tail. Train on log1p(days) and
+    # invert predictions with expm1 via TransformedTargetRegressor -- a standard fix
+    # that lets the model spend capacity on the common short deliveries. The wrapper
+    # does the transform/inverse itself, so CV scoring and every downstream metric
+    # stay in day-units. sample_weight still routes as xgbregressor__sample_weight
+    # (forwarded through the wrapper into the pipeline step); only grid keys gain the
+    # regressor__ prefix.
+    base_pipeline = TransformedTargetRegressor(
+        regressor=make_pipeline(
+            make_preprocessing(),
+            XGBRegressor(
+                objective="reg:squarederror",
+                tree_method="hist",
+                random_state=42,
+                n_jobs=-1,
+            ),
         ),
+        func=np.log1p,
+        inverse_func=np.expm1,
     )
     param_distributions = {
-        "xgbregressor__n_estimators": [200, 400, 600, 800],
-        "xgbregressor__max_depth": [3, 4, 5, 6, 8],
-        "xgbregressor__learning_rate": [0.02, 0.03, 0.05, 0.1, 0.2],
-        "xgbregressor__subsample": [0.6, 0.8, 1.0],
-        "xgbregressor__colsample_bytree": [0.6, 0.8, 1.0],
-        "xgbregressor__min_child_weight": [1, 3, 5, 10],
+        "regressor__xgbregressor__n_estimators": [200, 400, 600, 800],
+        "regressor__xgbregressor__max_depth": [3, 4, 5, 6, 8],
+        "regressor__xgbregressor__learning_rate": [0.02, 0.03, 0.05, 0.1, 0.2],
+        "regressor__xgbregressor__subsample": [0.6, 0.8, 1.0],
+        "regressor__xgbregressor__colsample_bytree": [0.6, 0.8, 1.0],
+        "regressor__xgbregressor__min_child_weight": [1, 3, 5, 10],
     }
     search = RandomizedSearchCV(
         base_pipeline,
@@ -249,7 +261,7 @@ def main():
     cv_rmse = -search.best_score_
     print("\nBest hyperparameters:")
     for key, val in search.best_params_.items():
-        print(f"  {key.replace('xgbregressor__', '')}: {val}")
+        print(f"  {key.replace('regressor__xgbregressor__', '')}: {val}")
     print(f"Best CV RMSE: {cv_rmse:.4f} days")
 
     # Choose the recency half-life on VALIDATION, holding the tuned hyperparameters fixed.
