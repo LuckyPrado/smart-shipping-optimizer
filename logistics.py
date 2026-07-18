@@ -48,6 +48,67 @@ def engineer_features(df):
     return df
 
 
+# PR 13.4 historical aggregates. Order grain (PR 10.2) dropped seller_id, so the
+# seller's zip prefix (~2000 values) is the granular stand-in for its track record.
+HIST_KEYS = {
+    "sellerzip_hist": "seller_zip_code_prefix",
+    "route_hist": "state_pair",
+}
+
+
+def leak_safe_expanding_mean(df, key, target="actual_delivery_days",
+                             purchase="order_purchase_timestamp",
+                             delivered="order_delivered_customer_date"):
+    """Per-row historical mean of `target` over prior same-`key` orders whose delivery
+    completed strictly BEFORE this order was purchased -- i.e. only outcomes already
+    knowable at checkout. Returns a Series on df.index, NaN where a row has no usable
+    history. This delivered-before-purchased shift is what stops the seller/route
+    track-record features from leaking the label.
+    """
+    out = pd.Series(np.nan, index=df.index, dtype=float)
+    for _, grp in df.groupby(key, sort=False):
+        comp = grp[[delivered, target]].dropna().sort_values(delivered)
+        if comp.empty:
+            continue
+        dtimes = comp[delivered].values
+        cumsum = comp[target].to_numpy().cumsum()
+        # count of completions delivered strictly before each order's purchase
+        idx = np.searchsorted(dtimes, grp[purchase].values, side="left")
+        sums = np.where(idx > 0, cumsum[np.clip(idx - 1, 0, len(cumsum) - 1)], 0.0)
+        out.loc[grp.index] = np.divide(
+            sums, idx, out=np.full(len(idx), np.nan), where=idx > 0)
+    return out
+
+
+def fit_historical_aggregates(train_set):
+    """Build the leak-safe training columns AND the serving-time lookup maps.
+
+    Training rows get an expanding (past-completed-only) mean per key; validation/test
+    rows later look up a single training-window mean per key -- all of which is
+    chronologically in their past, so no leak. Returns (train_cols_df, maps) where maps
+    holds the per-key mean Series plus the median used to fill unseen keys.
+    """
+    keyed = train_set.copy()
+    keyed["state_pair"] = keyed["seller_state"] + "_" + keyed["customer_state"]
+    fill = keyed["actual_delivery_days"].median()
+    cols, maps = {}, {"fill": fill}
+    for name, key in HIST_KEYS.items():
+        cols[name] = leak_safe_expanding_mean(keyed, key).fillna(fill)
+        maps[name] = keyed.groupby(key)["actual_delivery_days"].mean()
+    return pd.DataFrame(cols, index=train_set.index), maps
+
+
+def add_historical_aggregates(X, maps):
+    """Attach serving-time aggregate columns to an engineered validation/test frame:
+    map each key to its training-window mean, median-fill unseen keys. X must carry
+    state_pair (from engineer_features) and the raw seller_zip_code_prefix column.
+    """
+    X = X.copy()
+    for name, key in HIST_KEYS.items():
+        X[name] = X[key].map(maps[name]).fillna(maps["fill"])
+    return X
+
+
 # Column schema, pruned 88 -> 15 in PR 7. Rejected features (distance, regions,
 # order size, category, seller behaviour, 60+ interactions) and their test-set
 # numbers are documented in analysis/feature_engineering.ipynb's experiment log.
@@ -62,6 +123,10 @@ num_attribs = [
     # order economics + physical size.
     "price", "freight_value", "payment_value",
     "product_weight_g", "product_length_cm", "product_height_cm", "product_width_cm",
+    # PR 13.4 leak-safe historical track records (built in fit_historical_aggregates,
+    # not engineer_features -- they need the training labels and a fitted lookup map).
+    "sellerzip_hist",            # avg past delivery time from this seller's zip prefix
+    "route_hist",                # avg past delivery time on this seller->customer route
 ]
 
 # Regions dropped: redundant with the state one-hot (region is derived from state).
@@ -104,10 +169,11 @@ def metric_panel(y_true, preds):
     }
 
 
-def evaluate(model, dummy, eval_set, label):
+def evaluate(model, dummy, eval_set, label, agg_maps):
     """Score the model against the naive-mean and Olist-estimate baselines."""
     y = eval_set["actual_delivery_days"].copy()
     X = engineer_features(eval_set.drop("actual_delivery_days", axis=1))
+    X = add_historical_aggregates(X, agg_maps)   # PR 13.4 serving-time lookups
 
     preds = model.predict(X)
     r2 = r2_score(y, preds)
@@ -189,6 +255,12 @@ def main():
     logistics_train = engineer_features(train_set.drop("actual_delivery_days", axis=1))
     logistics_labels = train_set["actual_delivery_days"].copy()
 
+    # ---- PR 13.4: leak-safe seller/route historical aggregates ----
+    # Training rows get an expanding past-only mean; the fitted maps serve val/test.
+    hist_cols, agg_maps = fit_historical_aggregates(train_set)
+    for col in hist_cols.columns:
+        logistics_train[col] = hist_cols[col]
+
     # Naive baseline: predict the training-mean delivery time for every order.
     dummy_regr = DummyRegressor(strategy="mean")
     dummy_regr.fit(logistics_train, logistics_labels)
@@ -269,6 +341,7 @@ def main():
     print("\nTuning recency half-life on validation (tuned hyperparameters fixed)...")
     val_labels = val_set["actual_delivery_days"]
     val_X = engineer_features(val_set.drop("actual_delivery_days", axis=1))
+    val_X = add_historical_aggregates(val_X, agg_maps)   # PR 13.4 serving-time lookups
     best_hl, best_hl_rmse = None, float("inf")
     for hl in [60, 120, 240, None]:
         est = clone(search.best_estimator_)
@@ -285,14 +358,14 @@ def main():
     EVALUATE_ON_TEST = False   # flip to True exactly once, in PR 13's final commit
 
     print("\nScoring on the VALIDATION window (test stays frozen)...")
-    val_metrics = evaluate(xgb_reg, dummy_regr, val_set, "Validation")
+    val_metrics = evaluate(xgb_reg, dummy_regr, val_set, "Validation", agg_maps)
     print(f"\nCV mean RMSE (tuned):       {cv_rmse:.4f} days")
     # The difference between the cv_rmse and val_rmse it is not only fit, but also the drift due to the non-stationarity property of our data.
     print(f"CV-vs-Holdout gap (drift + fit):            {cv_rmse - val_metrics['rmse']:.4f} days")
 
     if EVALUATE_ON_TEST:
         print("\n*** Touching the TEST set (one-shot, PR 13 final) ***")
-        evaluate(xgb_reg, dummy_regr, test_set, "TEST (frozen)")
+        evaluate(xgb_reg, dummy_regr, test_set, "TEST (frozen)", agg_maps)
     else:
         print("\nTEST set frozen (EVALUATE_ON_TEST=False) -- not scored this run.")
 
@@ -304,6 +377,7 @@ def main():
 
     model_artifact = {
         "model": xgb_reg,
+        "agg_maps": agg_maps,   # PR 13.4 serving-time lookups (needed to rebuild features)
         "num_attribs": num_attribs,
         "cat_attribs": cat_attribs,
         "cv_mean_rmse": cv_rmse,
