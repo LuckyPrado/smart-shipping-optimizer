@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder, StandardScaler, TargetEncoder
+from sklearn.preprocessing import OneHotEncoder, TargetEncoder
 from sklearn.pipeline import make_pipeline
 from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.metrics import root_mean_squared_error, mean_absolute_error, r2_score
@@ -129,12 +129,17 @@ num_attribs = [
     "route_hist",                # avg past delivery time on this seller->customer route
 ]
 
-# Regions dropped: redundant with the state one-hot (region is derived from state).
-cat_attribs = ["seller_state", "customer_state", "product_category_name"]
+# PR 13.5: only product_category_name is one-hot encoded now. seller_state and
+# customer_state used to be one-hot AND target-encoded -- the one-hot copy is dropped
+# (target encoding below keeps them, and state_pair covers the interaction). Regions
+# were dropped earlier as redundant with state.
+cat_attribs = ["product_category_name"]
 
 
 def make_preprocessing():
-    num_pipeline = make_pipeline(SimpleImputer(strategy="median"), StandardScaler())
+    # No StandardScaler: trees are scale-invariant, so it was a no-op. Median imputation
+    # is still needed to fill the occasional missing numeric input.
+    num_pipeline = make_pipeline(SimpleImputer(strategy="median"))
     cat_pipeline = make_pipeline(
         SimpleImputer(strategy="most_frequent"),
         OneHotEncoder(handle_unknown="ignore"),
