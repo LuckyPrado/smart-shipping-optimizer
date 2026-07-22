@@ -14,9 +14,7 @@ import networkx as nx
 from statsmodels.nonparametric.smoothers_lowess import lowess
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
 from sklearn.decomposition import PCA
-from sklearn.cluster import DBSCAN
 from scipy import stats
 
 
@@ -55,14 +53,14 @@ if __name__ == "__main__":
     print("=" * 60)
     print("1. DISTANCE vs DELIVERY DAYS")
     print("=" * 60)
+    # Drop NaNs from BOTH columns together so the two series stay row-aligned. Dropping
+    # each independently only happens to work while the geo merge guarantees no NaNs --
+    # the moment either column gains one, the rows silently mispair.
+    dist_pair = logistics[["real_distance_km", "actual_delivery_days"]].dropna()
     pearson_r, pearson_p = stats.pearsonr(
-        logistics["real_distance_km"].dropna(),
-        logistics["actual_delivery_days"].dropna()
-    )
+        dist_pair["real_distance_km"], dist_pair["actual_delivery_days"])
     spearman_r, spearman_p = stats.spearmanr(
-        logistics["real_distance_km"].dropna(),
-        logistics["actual_delivery_days"].dropna()
-    )
+        dist_pair["real_distance_km"], dist_pair["actual_delivery_days"])
     print(f"Pearson r:  {pearson_r:.4f}  (p={pearson_p:.2e})")
     print(f"Spearman r: {spearman_r:.4f}  (p={spearman_p:.2e})")
     print(f"log_distance Pearson: {logistics['log_distance'].corr(logistics['actual_delivery_days']):.4f}")
@@ -175,7 +173,6 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("6. PURCHASE MONTH SEASONALITY")
     print("=" * 60)
-    monthly_stats = logistics.groupby("order_purchase_timestamp".replace("order_purchase_timestamp", "purchase_month") if False else logistics["order_purchase_timestamp"].dt.month)["actual_delivery_days"].agg(["mean", "std"])
     logistics["purchase_month"] = logistics["order_purchase_timestamp"].dt.month
     monthly_stats = logistics.groupby("purchase_month")["actual_delivery_days"].agg(["mean", "std"])
     print(monthly_stats.to_string())
