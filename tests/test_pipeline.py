@@ -7,7 +7,6 @@ test that fails loudly if anyone reintroduces one.
 """
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 

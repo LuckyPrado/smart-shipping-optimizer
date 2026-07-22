@@ -1,25 +1,28 @@
-from packaging import version
-import sklearn
-assert version.parse(sklearn.__version__) >= version.parse("1.0.1")
-
-from pathlib import Path
 import json
 from datetime import datetime
+from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
-import joblib
-from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder, TargetEncoder
-from sklearn.pipeline import make_pipeline
-from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
-from sklearn.metrics import root_mean_squared_error, mean_absolute_error, r2_score
-from sklearn.dummy import DummyRegressor
+import sklearn
+from packaging import version
 from sklearn.base import clone
+from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
+from sklearn.dummy import DummyRegressor
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import OneHotEncoder, TargetEncoder
 from xgboost import XGBRegressor
 
-from utils import load_data, brazil_regions
+from utils import brazil_regions, load_data
+
+# Fail fast with a clear message on a too-old scikit-learn (the TargetEncoder + pipeline
+# fit-param routing used here need >= 1.0.1).
+assert version.parse(sklearn.__version__) >= version.parse("1.0.1"), \
+    f"scikit-learn >= 1.0.1 required, found {sklearn.__version__}"
 
 
 def engineer_features(df):

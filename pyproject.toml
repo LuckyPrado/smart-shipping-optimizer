@@ -6,8 +6,10 @@ indent-width = 4
 # Assume Python 3.12.
 target-version = "py312"
 
-# Directories to exclude from linting.
-exclude = []
+# Exclude the exploratory notebook and the experiments/ scratch area from linting
+# (their conventions -- semicolon one-liners, exploratory unused imports -- are not the
+# source tree's). This extends ruff's built-in excludes (.venv, venv, ...).
+extend-exclude = ["experiments", "*.ipynb"]
 
 [tool.ruff.lint]
 # F = Pyflakes; E4/E7/E9 = the meaningful pycodestyle error classes.
