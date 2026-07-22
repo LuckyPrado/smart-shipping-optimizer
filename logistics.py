@@ -3,11 +3,12 @@ import sklearn
 assert version.parse(sklearn.__version__) >= version.parse("1.0.1")
 
 from pathlib import Path
-import pickle
+import json
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
+import joblib
 from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, TargetEncoder
@@ -249,6 +250,85 @@ def promise_report(quantile_model, X, y, label):
     return coverage
 
 
+# ---- PR 14.2: portable model persistence ----
+# A single pickle of the whole fitted pipeline breaks across sklearn/xgboost/python
+# upgrades and is unsafe to load from an untrusted source. Instead each model is split
+# into: the XGBoost booster in XGBoost's own version-stable JSON, the fitted sklearn
+# preprocessing (+ the historical-aggregate maps) via joblib, and the metrics/params/
+# schema as a plain-text JSON sidecar a human can read. Both the point model and the P90
+# promise model are TransformedTargetRegressors wrapping make_pipeline(ColumnTransformer,
+# XGBRegressor); the log1p/expm1 target transform is stateless and recorded in the sidecar
+# so inference re-applies expm1 itself.
+ARTIFACT_SUFFIXES = (".point.json", ".p90.json", ".preprocessing.joblib", ".meta.json")
+
+
+def _booster(ttr):
+    return ttr.regressor_.named_steps["xgbregressor"]
+
+
+def _preprocessing(ttr):
+    return ttr.regressor_.named_steps["columntransformer"]
+
+
+def save_artifact(point_model, p90_model, agg_maps, meta, models_dir, base_name):
+    """Write the four-part portable artifact under models_dir/base_name and return the stem."""
+    models_dir = Path(models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    base = models_dir / base_name
+    _booster(point_model).save_model(f"{base}.point.json")
+    _booster(p90_model).save_model(f"{base}.p90.json")
+    joblib.dump(
+        {"point_pre": _preprocessing(point_model),
+         "p90_pre": _preprocessing(p90_model),
+         "agg_maps": agg_maps},
+        f"{base}.preprocessing.joblib",
+    )
+    with open(f"{base}.meta.json", "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, default=float)
+    return base
+
+
+def load_artifact(path):
+    """Load a portable artifact. `path` may be the stem or any of its four files.
+
+    Returns a dict with the two loaded boosters, their preprocessing, the agg_maps, and the
+    metadata. Use predict_days / predict_promise to reproduce the training-run predictions.
+    """
+    base = str(path)
+    for suf in ARTIFACT_SUFFIXES:
+        if base.endswith(suf):
+            base = base[: -len(suf)]
+            break
+    point, p90 = XGBRegressor(), XGBRegressor()
+    point.load_model(f"{base}.point.json")
+    p90.load_model(f"{base}.p90.json")
+    pre = joblib.load(f"{base}.preprocessing.joblib")
+    with open(f"{base}.meta.json", encoding="utf-8") as f:
+        meta = json.load(f)
+    return {"point": point, "p90": p90, "point_pre": pre["point_pre"],
+            "p90_pre": pre["p90_pre"], "agg_maps": pre["agg_maps"], "meta": meta}
+
+
+def latest_artifact(models_dir):
+    """Return the stem of the newest portable artifact in models_dir (by .meta.json mtime)."""
+    metas = sorted(Path(models_dir).glob("*.meta.json"), key=lambda p: p.stat().st_mtime)
+    if not metas:
+        raise FileNotFoundError(f"No portable model artifacts (*.meta.json) in {models_dir}")
+    return str(metas[-1])[: -len(".meta.json")]
+
+
+def predict_days(bundle, X):
+    """Point prediction in days. X must already have engineer_features + the historical
+    aggregates (add_historical_aggregates) applied. Mirrors point_model.predict exactly:
+    expm1 of the booster's log-space output on the preprocessed matrix."""
+    return np.expm1(bundle["point"].predict(bundle["point_pre"].transform(X)))
+
+
+def predict_promise(bundle, X):
+    """P90 'arrives by' promise in days (same contract as predict_days)."""
+    return np.expm1(bundle["p90"].predict(bundle["p90_pre"].transform(X)))
+
+
 def main():
     logistics = load_data()
     print("Data loaded:", logistics.shape)
@@ -464,17 +544,12 @@ def main():
 
     # model persistence
     model_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_filename = f"xgb_delivery_model_{model_timestamp}_valrmse{val_metrics['rmse']:.4f}.pkl"
-    model_path = Path(__file__).resolve().parent / "models" / model_filename
-    model_path.parent.mkdir(parents=True, exist_ok=True)
+    base_name = f"xgb_delivery_model_{model_timestamp}_valrmse{val_metrics['rmse']:.4f}"
 
-    model_artifact = {
-        # PR 13.7: when tested, these are retrained on train+validation (all history).
-        "model": ship_model,
-        "quantile_model": ship_p90,   # PR 13.6 P90 "arrives by" promise model
+    # Human-readable sidecar: metrics, tuned params, feature schema, target transform.
+    meta = {
         "quantile_alpha": 0.9,
-        "val_p90_coverage": p90_coverage,
-        "agg_maps": ship_maps,   # PR 13.4 serving-time lookups (needed to rebuild features)
+        "target_transform": "log1p/expm1",   # applied by predict_days/predict_promise
         "num_attribs": num_attribs,
         "cat_attribs": cat_attribs,
         "cv_mean_rmse": cv_rmse,
@@ -482,12 +557,13 @@ def main():
         "val_rmse": val_metrics["rmse"],
         "val_mae": val_metrics["mae"],
         "val_r2": val_metrics["r2"],
+        "val_p90_coverage": p90_coverage,
         "baseline_rmse": val_metrics["baseline_rmse"],
         "trained_at": model_timestamp,
         "n_features": len(num_attribs) + len(cat_attribs),
     }
     if test_metrics is not None:
-        model_artifact.update({
+        meta.update({
             "test_rmse": test_metrics["rmse"],
             "test_mae": test_metrics["mae"],
             "test_r2": test_metrics["r2"],
@@ -497,11 +573,17 @@ def main():
             "test_olist_rmse": test_metrics["olist_rmse"],
             "test_p90_coverage": test_p90_coverage,
         })
-    with open(model_path, "wb") as f:
-        pickle.dump(model_artifact, f)
 
-    print(f"\nModel saved to {model_path}")
-    print(f"Artifact size: {model_path.stat().st_size / 1024 / 1024:.2f} MB")
+    models_dir = Path(__file__).resolve().parent / "models"
+    base = save_artifact(ship_model, ship_p90, ship_maps, meta, models_dir, base_name)
+
+    print(f"\nModel saved (portable, {len(ARTIFACT_SUFFIXES)} files) to {base}.*")
+    total_kb = 0.0
+    for suf in ARTIFACT_SUFFIXES:
+        kb = Path(f"{base}{suf}").stat().st_size / 1024
+        total_kb += kb
+        print(f"  {Path(base).name}{suf}: {kb:.1f} KB")
+    print(f"Total artifact size: {total_kb / 1024:.2f} MB")
 
 
 if __name__ == "__main__":
