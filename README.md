@@ -136,7 +136,26 @@ This runs the hyperparameter search, prints the chosen params and cross-validati
 the validation window (where all decisions are made), then retrains on train+validation and
 scores the frozen test window once — each as a metric panel (RMSE / MAE / median / P90 / late
 rate) next to the naive baseline and Olist's own estimate, plus the P90 promise model's
-coverage. It saves a timestamped model artifact (point model + promise model) to `models/`.
+coverage. It saves a portable model artifact (point model + promise model) to `models/` as
+four files: two XGBoost-JSON boosters, a joblib preprocessing bundle, and a human-readable
+`.meta.json` sidecar (metrics, params, feature schema).
+
+Score orders with the saved model:
+
+```bash
+python predict.py --demo            # score 5 rows from the frozen test window
+python predict.py --csv orders.csv  # score your own order-grain CSV
+```
+
+`predict.py` loads the newest artifact from `models/`, rebuilds the features, and prints the
+predicted delivery days alongside the P90 "arrives by" promise (and, in `--demo`, the actual
+delivery time and whether the promise held).
+
+Run the test suite:
+
+```bash
+pytest
+```
 
 Run the exploratory analysis (opens matplotlib plots):
 
