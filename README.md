@@ -30,6 +30,13 @@ promise. A second model, trained on the 0.9 pinball loss, answers *"90% of order
 X"*: on the frozen test window it covers **92.3%** of orders with an average promise of **14.5
 days** — tighter than Olist's own 18.1-day average estimate, while still keeping the promise.
 
+![Predicted vs. actual delivery days on the frozen test window](docs/predicted_vs_actual.png)
+
+*Predictions vs. truth on the never-tuned-on test window. The mass sits along the diagonal;
+the model regresses toward the mean at the extremes — over-predicting the very fastest orders,
+under-predicting the slowest — the honest signature of a squared-error model. (Shown RMSE 4.78
+is one retrain; the 4.75 headline is the same model within run-to-run search noise.)*
+
 The full modeling record — including experiments that were **rejected** and logged anyway (e.g.
 early stopping, which fought the recency weighting, and ~20 candidate features dropped as
 redundant) — is in `analysis/feature_engineering.ipynb`.
@@ -46,6 +53,14 @@ split**: earliest **70%** train, next **15%** validation, latest **15%** test.
   decisions are final — and whatever it reports is what's in the table above, better or worse.
 - The shipped model is then retrained on train + validation combined (all history before the
   test window), which is what a deployed model would actually use.
+
+![Mean delivery days by purchase month, 2016–2018](docs/delivery_drift.png)
+
+*Why the split has to be chronological — and why recent orders are weighted more. Delivery
+times fall steadily across the data window, so the training period describes a slower
+marketplace than the one being predicted. This drift is what recency weighting (PR 13.1)
+counters, and it's also why the test window's naive baseline (7.35) is lower than
+validation's (8.27).*
 
 The old 5.47 isn't comparable to the 4.75 here — it came from a different, since-replaced
 pipeline *and* a contaminated measurement. The point of this rework was not to beat it, but to
