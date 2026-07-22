@@ -35,6 +35,61 @@ def haversine(lat1, lon1, lat2, lon2):
     distance = R * 2 * np.arcsin(np.sqrt(a))
     return distance 
 
+# PR 10.2 order-grain aggregation contract. Economics + total shipment weight are summed,
+# the biggest box drives handling so dimensions are maxed, items and distinct sellers are
+# counted, and the heaviest item's category/geography is kept ("first" after a weight-desc
+# sort). Everything else is constant within an order, so "first" just carries it through.
+ORDER_AGG_SPEC = {
+    "price": "sum",
+    "freight_value": "sum",
+    "product_weight_g": "sum",
+    "product_length_cm": "max",
+    "product_height_cm": "max",
+    "product_width_cm": "max",
+    "product_id": "count",     # -> order_item_count
+    "seller_id": "nunique",    # -> order_unique_sellers
+    "product_category_name": "first",
+    "order_status": "first",
+    "order_purchase_timestamp": "first",
+    "order_approved_at": "first",
+    "order_delivered_carrier_date": "first",
+    "order_delivered_customer_date": "first",
+    "order_estimated_delivery_date": "first",
+    "shipping_limit_date": "first",
+    "customer_id": "first",
+    "customer_state": "first",
+    "customer_zip_code_prefix": "first",
+    "customer_lat": "first",
+    "customer_lng": "first",
+    "seller_state": "first",
+    "seller_zip_code_prefix": "first",
+    "seller_lat": "first",
+    "seller_lng": "first",
+    "payment_installments": "first",
+    "payment_type": "first",
+    "payment_value": "first",
+    "payment_sequential": "first",
+    "review_score": "first",
+    "review_comment_length": "first",
+}
+
+
+def aggregate_order_items(df):
+    """Collapse an item-grain frame (one row per order line) to one row per order (PR 10.2).
+
+    Sorts heaviest item first so the "first" aggregations pick the heaviest item's category
+    and that seller's geography, then applies ORDER_AGG_SPEC. Columns absent from `df` are
+    skipped, which keeps the function unit-testable on a minimal hand-built frame.
+    """
+    df = df.sort_values("product_weight_g", ascending=False)
+    spec = {col: how for col, how in ORDER_AGG_SPEC.items() if col in df.columns}
+    grouped = df.groupby("order_id", as_index=False).agg(spec)
+    return grouped.rename(columns={
+        "product_id": "order_item_count",
+        "seller_id": "order_unique_sellers",
+    })
+
+
 def load_data():
     path = Path(__file__).resolve().parent / "data"
     cache_file = path / "_cache.parquet"
@@ -109,55 +164,7 @@ def load_data():
     print(f"DataFrame after merging: {len(df)}")
 
     # ---- Aggregate order items to one row per order (PR 10.2) ----
-    # Sort heaviest item first so "first" picks the heaviest item's category
-    # (and, incidentally, that seller's geography for multi-seller orders).
-    df = df.sort_values("product_weight_g", ascending=False)
-
-    agg_spec = {
-        # sum: order economics + total shipment weight
-        "price": "sum",
-        "freight_value": "sum",
-        "product_weight_g": "sum",
-        # max: the biggest box drives handling
-        "product_length_cm": "max",
-        "product_height_cm": "max",
-        "product_width_cm": "max",
-        # counts -> two new features
-        "product_id": "count",     # renamed to order_item_count below
-        "seller_id": "nunique",    # renamed to order_unique_sellers below
-        # heaviest item's category (df is sorted by weight desc)
-        "product_category_name": "first",
-        # everything constant within an order
-        "order_status": "first",
-        "order_purchase_timestamp": "first",
-        "order_approved_at": "first",
-        "order_delivered_carrier_date": "first",
-        "order_delivered_customer_date": "first",
-        "order_estimated_delivery_date": "first",
-        "shipping_limit_date": "first",
-        "customer_id": "first",
-        "customer_state": "first",
-        "customer_zip_code_prefix": "first",
-        "customer_lat": "first",
-        "customer_lng": "first",
-        "seller_state": "first",
-        "seller_zip_code_prefix": "first",
-        "seller_lat": "first",
-        "seller_lng": "first",
-        # payment + review columns are already order-level, so "first" just carries them
-        "payment_installments": "first",
-        "payment_type": "first",
-        "payment_value": "first",
-        "payment_sequential": "first",
-        "review_score": "first",
-        "review_comment_length": "first",
-    }
-
-    df = df.groupby("order_id", as_index=False).agg(agg_spec)
-    df = df.rename(columns={
-        "product_id": "order_item_count",
-        "seller_id": "order_unique_sellers",
-    })
+    df = aggregate_order_items(df)
     print(f"Aggregated to one row per order: {len(df)}")
 
 

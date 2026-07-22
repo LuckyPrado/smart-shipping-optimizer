@@ -11,8 +11,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from logistics import cat_attribs, engineer_features, num_attribs
-from utils import haversine
+from logistics import (cat_attribs, engineer_features, leak_safe_expanding_mean,
+                       num_attribs)
+from utils import aggregate_order_items, haversine
 
 DATA_CACHE = Path(__file__).resolve().parent.parent / "data" / "_cache.parquet"
 
@@ -47,10 +48,10 @@ def test_haversine_known_city_pair():
     assert dist == pytest.approx(haversine(*rio, *sao_paulo))   # symmetric
 
 
-def test_order_grain_aggregation_contract():
-    """PR 10.2 rules on a hand-built item-grain order: sum economics + weight, max the
-    box dimensions, count items, count distinct sellers, and take the heaviest item's
-    category (rows sorted by weight descending first)."""
+def test_aggregate_order_items():
+    """Exercise the REAL PR-10.2 aggregation (utils.aggregate_order_items, the same code
+    load_data runs) on a hand-built item-grain order: sum economics + weight, max the box
+    dimensions, count items, count distinct sellers, keep the heaviest item's category."""
     items = pd.DataFrame({
         "order_id": ["A", "A", "B"],
         "seller_id": ["s1", "s2", "s3"],
@@ -62,27 +63,41 @@ def test_order_grain_aggregation_contract():
         "product_height_cm": [10.0, 5.0, 8.0],
         "product_width_cm": [12.0, 30.0, 9.0],
         "product_category_name": ["books", "furniture", "toys"],
-    }).sort_values("product_weight_g", ascending=False)
+    })
 
-    agg = items.groupby("order_id", as_index=False).agg(
-        price=("price", "sum"),
-        freight_value=("freight_value", "sum"),
-        product_weight_g=("product_weight_g", "sum"),
-        product_length_cm=("product_length_cm", "max"),
-        order_item_count=("product_id", "count"),
-        order_unique_sellers=("seller_id", "nunique"),
-        product_category_name=("product_category_name", "first"),
-    )
-    a = agg[agg["order_id"] == "A"].iloc[0]
-    b = agg[agg["order_id"] == "B"].iloc[0]
+    out = aggregate_order_items(items).set_index("order_id")
 
-    assert a["price"] == 80.0 and a["freight_value"] == 15.0     # summed economics
-    assert a["product_weight_g"] == 4000.0                       # summed weight
-    assert a["product_length_cm"] == 40.0                        # max dimension
-    assert a["order_item_count"] == 2
-    assert a["order_unique_sellers"] == 2
-    assert a["product_category_name"] == "furniture"            # heaviest item's category
-    assert b["order_item_count"] == 1 and b["order_unique_sellers"] == 1
+    assert out.loc["A", "price"] == 80.0 and out.loc["A", "freight_value"] == 15.0
+    assert out.loc["A", "product_weight_g"] == 4000.0            # summed weight (1000+3000)
+    assert out.loc["A", "product_length_cm"] == 40.0            # max dimension
+    assert out.loc["A", "order_item_count"] == 2
+    assert out.loc["A", "order_unique_sellers"] == 2
+    assert out.loc["A", "product_category_name"] == "furniture"  # heaviest item's category
+    assert out.loc["B", "order_item_count"] == 1
+    assert out.loc["B", "order_unique_sellers"] == 1
+
+
+def test_leak_safe_expanding_mean_only_sees_completed_history():
+    """The leak-safe shift: an order may use a same-key order's outcome only if that order
+    was DELIVERED strictly before this one was PURCHASED. History completing the day before
+    a purchase counts; history completing the day after (or with no history) does not."""
+    df = pd.DataFrame({
+        "key": ["K", "K", "K"],
+        "order_purchase_timestamp": pd.to_datetime(
+            ["2017-12-30", "2018-01-11", "2018-01-09"]),
+        "order_delivered_customer_date": pd.to_datetime(
+            ["2018-01-10", "2018-01-20", "2018-01-15"]),
+        "actual_delivery_days": [11.0, 9.0, 6.0],
+    })
+
+    out = leak_safe_expanding_mean(df, "key")
+
+    # row 0: the history order itself -- nothing completed before it -> NaN
+    assert pd.isna(out.iloc[0])
+    # row 1: purchased 01-11, history delivered 01-10 (day BEFORE) -> sees it -> 11.0
+    assert out.iloc[1] == 11.0
+    # row 2: purchased 01-09, history delivered 01-10 (day AFTER) -> must not see it -> NaN
+    assert pd.isna(out.iloc[2])
 
 
 # --- the leak guard: the whole reason this project exists -------------------------------
