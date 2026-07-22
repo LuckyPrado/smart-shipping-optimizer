@@ -230,6 +230,25 @@ def evaluate(model, dummy, eval_set, label, agg_maps):
             "olist_rmse": metric_panel(y, olist_preds)["rmse"]}
 
 
+def promise_report(quantile_model, X, y, label):
+    """Coverage + average promised days for the PR 13.6 P90 delivery-promise model.
+
+    coverage = fraction of orders that arrive on or under the promised day (the number
+    a customer-facing "arrives by" promise is actually judged on -- should sit near the
+    90% the model was trained to target). X must already carry the engineered columns
+    and the serving-time historical aggregates.
+    """
+    p = quantile_model.predict(X)
+    y = np.asarray(y, dtype=float)
+    coverage = float(np.mean(y <= p)) * 100.0
+    print(f"\nP90 delivery promise ({label}):")
+    print(f"  Empirical coverage: {coverage:.1f}%  (target 90% arrive on/under promise)")
+    print(f"  Avg promised days: {np.mean(p):.1f} | "
+          f"Olist estimate: {X['estimated_delivery_days'].mean():.1f} | "
+          f"actual: {y.mean():.1f}")
+    return coverage
+
+
 def main():
     logistics = load_data()
     print("Data loaded:", logistics.shape)
@@ -360,6 +379,30 @@ def main():
     print(f"Selected half-life: {'none' if best_hl is None else str(best_hl) + 'd'} "
           f"(val RMSE {best_hl_rmse:.4f})")
 
+    # ---- PR 13.6: P90 delivery-promise model ----
+    # A point estimate of the mean is the wrong product for a shipping promise -- by
+    # construction ~half of orders arrive after it. Train a SECOND model on the 0.9
+    # pinball loss so its prediction is a day X that ~90% of orders beat: an honest
+    # "arrives by" promise. Quantiles pass through the monotone log1p/expm1 transform
+    # unchanged, so the 0.9-quantile in log space is the 0.9-quantile in days -- we can
+    # reuse the same TTR wrapper, the tuned hyperparameters, and the selected recency
+    # weights (no separate search). This is the number you'd actually show a customer.
+    print("\nTraining P90 delivery-promise model (reg:quantileerror, alpha=0.9)...")
+    tuned_params = {k.replace("regressor__xgbregressor__", ""): v
+                    for k, v in search.best_params_.items()}
+    p90_model = TransformedTargetRegressor(
+        regressor=make_pipeline(
+            make_preprocessing(),
+            XGBRegressor(objective="reg:quantileerror", quantile_alpha=0.9,
+                         tree_method="hist", random_state=42, n_jobs=-1, **tuned_params),
+        ),
+        func=np.log1p,
+        inverse_func=np.expm1,
+    )
+    p90_model.fit(logistics_train, logistics_labels,
+                  xgbregressor__sample_weight=recency_weights(best_hl))
+    p90_coverage = promise_report(p90_model, val_X, val_labels, "Validation")
+
     EVALUATE_ON_TEST = False   # flip to True exactly once, in PR 13's final commit
 
     print("\nScoring on the VALIDATION window (test stays frozen)...")
@@ -382,6 +425,9 @@ def main():
 
     model_artifact = {
         "model": xgb_reg,
+        "quantile_model": p90_model,   # PR 13.6 P90 "arrives by" promise model
+        "quantile_alpha": 0.9,
+        "val_p90_coverage": p90_coverage,
         "agg_maps": agg_maps,   # PR 13.4 serving-time lookups (needed to rebuild features)
         "num_attribs": num_attribs,
         "cat_attribs": cat_attribs,
