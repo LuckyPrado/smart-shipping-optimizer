@@ -1,62 +1,40 @@
 [tool.ruff]
-
-#include the directories you want to ignore 
-
-exclude = [
-    
-]
-
-#same as Black 
+# Same as Black.
 line-length = 88
 indent-width = 4
 
-#assume python 3.12
-target-version = py312
+# Assume Python 3.12.
+target-version = "py312"
+
+# Directories to exclude from linting.
+exclude = []
 
 [tool.ruff.lint]
-#select the tools for linting
-# F = enable Pyflakes, E = enable pycodestyle, McCabe complexity ('C901')
-
+# F = Pyflakes; E4/E7/E9 = the meaningful pycodestyle error classes.
+# (A blanket `select = ["ALL"]` was tried but dropped -- on this codebase it buries the
+# real errors under hundreds of style nits.)
 select = ["E4", "E7", "E9", "F"]
 ignore = []
 
-#allow fix for all enabled rules when '--fix' is used
+# Allow autofix for all enabled rules when `--fix` is used.
 fixable = ["ALL"]
 unfixable = []
 
-#allow unused variables when underscore_prefixed
+# Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
-
-
 [tool.ruff.format]
-# use double quotes like Black
+# Use double quotes, like Black.
 quote-style = "double"
 
-#like Black, indent with spaces rather than tabs
+# Indent with spaces, like Black.
 indent-style = "space"
 
-#respect magic trailing commas
+# Respect magic trailing commas.
 skip-magic-trailing-comma = false
 
-#detect appropriate line ending 
+# Detect the appropriate line ending.
 line-ending = "auto"
 
 docstring-code-format = false
-
-#only work if the above is true 
 docstring-code-line-length = "dynamic"
-
-#line length standard 
-[tool.ruff]
-lint.select = ["ALL"]
-lint.ignore = [
-    "D203", # One blank line before class docstring
-    "D212",    # Multi-line summary first line
-    "PLR0913", # Too many arguments
-    "Q000",    # Single quotes found but double quotes preferred
-]
-line-length = 120
-show-fixes = true
-src = ["src",]
-target-version = "py39" # Minimum version linter changes must be valid for
