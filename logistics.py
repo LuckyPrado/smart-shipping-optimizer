@@ -403,7 +403,7 @@ def main():
                   xgbregressor__sample_weight=recency_weights(best_hl))
     p90_coverage = promise_report(p90_model, val_X, val_labels, "Validation")
 
-    EVALUATE_ON_TEST = False   # flip to True exactly once, in PR 13's final commit
+    EVALUATE_ON_TEST = True   # PR 13.7: flipped True exactly once, the final commit
 
     print("\nScoring on the VALIDATION window (test stays frozen)...")
     val_metrics = evaluate(xgb_reg, dummy_regr, val_set, "Validation", agg_maps)
@@ -411,9 +411,54 @@ def main():
     # The difference between the cv_rmse and val_rmse it is not only fit, but also the drift due to the non-stationarity property of our data.
     print(f"CV-vs-Holdout gap (drift + fit):            {cv_rmse - val_metrics['rmse']:.4f} days")
 
+    # The shipped model is the train-only one unless we go to test, in which case it is
+    # retrained on all history (train+validation) below.
+    ship_model, ship_p90, ship_maps = xgb_reg, p90_model, agg_maps
+    test_metrics = None
+
     if EVALUATE_ON_TEST:
+        # ---- PR 13.7: freeze, retrain on ALL history, touch TEST exactly once ----
+        # Every keep/revert and hyperparameter decision above was made on validation.
+        # Now the config is frozen. Standard practice is to ship (and therefore test) a
+        # model trained on all data chronologically before the test window, so we refit
+        # the frozen config -- tuned hyperparameters + selected half-life -- on
+        # train+validation combined, rebuilding the leak-safe aggregates and recency
+        # weights over that wider window. Then we score the test set a single time and
+        # record whatever it says. No decision is allowed to follow this number.
+        print("\n*** PR 13.7: retraining frozen config on train+validation, "
+              "then touching TEST once ***")
+        trainval = pd.concat([train_set, val_set]).sort_values("order_purchase_timestamp")
+        y_tv = trainval["actual_delivery_days"].copy()
+        X_tv = engineer_features(trainval.drop("actual_delivery_days", axis=1))
+        hist_tv, ship_maps = fit_historical_aggregates(trainval)
+        for col in hist_tv.columns:
+            X_tv[col] = hist_tv[col]
+        end_tv = trainval["order_purchase_timestamp"].max()
+        age_tv = (end_tv - trainval["order_purchase_timestamp"]).dt.days.values
+        sw_tv = None if best_hl is None else 0.5 ** (age_tv / best_hl)
+
+        ship_model = clone(search.best_estimator_)
+        ship_model.fit(X_tv, y_tv, xgbregressor__sample_weight=sw_tv)
+
+        ship_p90 = TransformedTargetRegressor(
+            regressor=make_pipeline(
+                make_preprocessing(),
+                XGBRegressor(objective="reg:quantileerror", quantile_alpha=0.9,
+                             tree_method="hist", random_state=42, n_jobs=-1,
+                             **tuned_params),
+            ),
+            func=np.log1p, inverse_func=np.expm1,
+        )
+        ship_p90.fit(X_tv, y_tv, xgbregressor__sample_weight=sw_tv)
+
+        dummy_tv = DummyRegressor(strategy="mean").fit(X_tv, y_tv)
+
         print("\n*** Touching the TEST set (one-shot, PR 13 final) ***")
-        evaluate(xgb_reg, dummy_regr, test_set, "TEST (frozen)", agg_maps)
+        test_metrics = evaluate(ship_model, dummy_tv, test_set, "TEST (frozen)", ship_maps)
+        test_X = add_historical_aggregates(
+            engineer_features(test_set.drop("actual_delivery_days", axis=1)), ship_maps)
+        test_p90_coverage = promise_report(
+            ship_p90, test_X, test_set["actual_delivery_days"], "TEST (frozen)")
     else:
         print("\nTEST set frozen (EVALUATE_ON_TEST=False) -- not scored this run.")
 
@@ -424,11 +469,12 @@ def main():
     model_path.parent.mkdir(parents=True, exist_ok=True)
 
     model_artifact = {
-        "model": xgb_reg,
-        "quantile_model": p90_model,   # PR 13.6 P90 "arrives by" promise model
+        # PR 13.7: when tested, these are retrained on train+validation (all history).
+        "model": ship_model,
+        "quantile_model": ship_p90,   # PR 13.6 P90 "arrives by" promise model
         "quantile_alpha": 0.9,
         "val_p90_coverage": p90_coverage,
-        "agg_maps": agg_maps,   # PR 13.4 serving-time lookups (needed to rebuild features)
+        "agg_maps": ship_maps,   # PR 13.4 serving-time lookups (needed to rebuild features)
         "num_attribs": num_attribs,
         "cat_attribs": cat_attribs,
         "cv_mean_rmse": cv_rmse,
@@ -440,6 +486,17 @@ def main():
         "trained_at": model_timestamp,
         "n_features": len(num_attribs) + len(cat_attribs),
     }
+    if test_metrics is not None:
+        model_artifact.update({
+            "test_rmse": test_metrics["rmse"],
+            "test_mae": test_metrics["mae"],
+            "test_r2": test_metrics["r2"],
+            "test_p90_ae": test_metrics["p90_ae"],
+            "test_late_%": test_metrics["late_%"],
+            "test_baseline_rmse": test_metrics["baseline_rmse"],
+            "test_olist_rmse": test_metrics["olist_rmse"],
+            "test_p90_coverage": test_p90_coverage,
+        })
     with open(model_path, "wb") as f:
         pickle.dump(model_artifact, f)
 

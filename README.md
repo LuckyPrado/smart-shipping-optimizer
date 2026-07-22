@@ -8,28 +8,67 @@ held-out test set, with no data leakage.
 
 ## Results
 
-| Model | Held-out test RMSE | R² |
-|-------|--------------------|-----|
-| Naive baseline (predict the training mean) | 7.47 days | — |
-| **XGBoost (tuned, 15 features)** | **5.47 days** | **+0.11** |
+Scored on a test window that was frozen from the start and measured **exactly once**, after
+every decision was final (see [How performance was measured](#how-performance-was-measured)):
 
-The model beats the naive baseline by ~27%. R² is modest because delivery times drift over
-time (Olist got faster from 2016→2018) — a genuine non-stationarity in the data, not a bug.
-Every feature and hyperparameter decision was validated by measuring on the time-based test
-set; the full record — including ~20 candidate features that were tested and **rejected** as
-redundant — is in `analysis/feature_engineering.ipynb`.
+| Predictor | Test RMSE | MAE | P90 abs. err. | Late rate | R² |
+|-----------|-----------|-----|---------------|-----------|-----|
+| Naive baseline (predict the training mean) | 7.35 days | 6.32 | 10.82 | 13.6% | — |
+| Olist's own delivery estimate | 13.19 days | 10.80 | 21.00 | 5.7% | — |
+| **XGBoost (tuned)** | **4.75 days** | **3.15** | **6.42** | 41.4% | +0.24 |
+
+On the never-tuned-on test window the model cuts the naive-baseline RMSE by **~35%** and beats
+Olist's own delivery estimate by **~64%**. The absolute error is *lower* than on validation
+(6.23 RMSE) mainly because delivery times drift — the most recent orders (the test window) are
+faster and less dispersed, so there's simply less error to make, which also drags R² down (less
+variance to explain), rather than the model suddenly generalizing better. "Late rate" is the
+share of orders that arrive *after* the prediction; because the point model targets the mean,
+~40% run late by design — which is exactly why a separate promise model exists.
+
+**Delivery promises (P90 model).** A mean estimate is the wrong product for an "arrives by"
+promise. A second model, trained on the 0.9 pinball loss, answers *"90% of orders arrive by day
+X"*: on the frozen test window it covers **92.3%** of orders with an average promise of **14.5
+days** — tighter than Olist's own 18.1-day average estimate, while still keeping the promise.
+
+The full modeling record — including experiments that were **rejected** and logged anyway (e.g.
+early stopping, which fought the recency weighting, and ~20 candidate features dropped as
+redundant) — is in `analysis/feature_engineering.ipynb`.
+
+### How performance was measured
+
+An earlier version of this project chose its features and hyperparameters by measuring on the
+test set, so its headline number (5.47 RMSE) was optimistic — the model had, indirectly,
+already seen the data it was graded on. This version uses a strict **three-way chronological
+split**: earliest **70%** train, next **15%** validation, latest **15%** test.
+
+- **Every** keep/drop and tuning decision is made on the **validation** window.
+- The **test** window stays frozen and is scored **exactly once**, at the very end, after all
+  decisions are final — and whatever it reports is what's in the table above, better or worse.
+- The shipped model is then retrained on train + validation combined (all history before the
+  test window), which is what a deployed model would actually use.
+
+The old 5.47 isn't comparable to the 4.75 here — it came from a different, since-replaced
+pipeline *and* a contaminated measurement. The point of this rework was not to beat it, but to
+produce a number that can be trusted.
 
 ### Key modeling decisions
 - **Target:** actual delivery time (`order_delivered_customer_date − order_purchase_timestamp`),
-  *not* the platform's own estimate (which is what an earlier version leaked).
-- **Split:** time-based (earliest 80% train, latest 20% test) so the model is judged on
+  *not* the platform's own estimate (which is what an earlier version leaked). Trained on
+  `log1p(days)` to tame the long right tail of slow deliveries, then inverted with `expm1`.
+- **Split:** time-based 70% train / 15% validation / 15% test so the model is judged on
   forecasting the future, never on peeking at it. CV uses `TimeSeriesSplit`.
-- **Features:** a compact, proven set of 15 — Olist's promised delivery window, purchase-month
-  seasonality, raw coordinates + zip prefixes, and order economics/size. Distance, region,
-  order-size, category, and seller-behaviour features were all measured and dropped as redundant.
-- **Encoding:** state-level target encoding is refit *inside* the CV pipeline (per fold) so it
-  can't leak.
+- **Features:** a compact, validated set — Olist's promised delivery window, purchase-month
+  seasonality, raw coordinates + zip prefixes, order economics/size, and leak-safe historical
+  averages per seller-zip and per shipping route (each row sees only orders that *completed*
+  before it was placed). Distance, region, order-size, category, and seller-behaviour features
+  were all measured and dropped as redundant.
+- **Drift handling:** deliveries got faster over 2016→2018, so training rows are **recency-
+  weighted** (weight halves every 60 days into the past); the half-life is chosen on validation.
+- **Encoding:** state / route target encoding is refit *inside* the CV pipeline (per fold) so it
+  can't leak. No feature scaling — trees are scale-invariant.
 - **Tuning:** `RandomizedSearchCV` over a `TimeSeriesSplit`, not hardcoded guesses.
+- **Promise model:** a second XGBoost trained on the 0.9 quantile (pinball) loss produces the
+  customer-facing "arrives by" date, reported with its empirical coverage.
 
 ## Project layout
 
@@ -93,9 +132,11 @@ Train, tune, and evaluate the model (the main entry point):
 python logistics.py
 ```
 
-This runs the hyperparameter search, prints the chosen params, cross-validation RMSE, and
-held-out test RMSE/MAE/R² next to the naive baseline, and saves a timestamped model artifact
-to `models/`.
+This runs the hyperparameter search, prints the chosen params and cross-validation RMSE, scores
+the validation window (where all decisions are made), then retrains on train+validation and
+scores the frozen test window once — each as a metric panel (RMSE / MAE / median / P90 / late
+rate) next to the naive baseline and Olist's own estimate, plus the P90 promise model's
+coverage. It saves a timestamped model artifact (point model + promise model) to `models/`.
 
 Run the exploratory analysis (opens matplotlib plots):
 
