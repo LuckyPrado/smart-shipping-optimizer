@@ -9,3 +9,7 @@ xgboost==3.3.0
 statsmodels==0.14.6
 networkx==3.6.1
 pyarrow==24.0.0
+
+# dev / test tooling
+pytest==9.1.1
+ruff==0.15.22
